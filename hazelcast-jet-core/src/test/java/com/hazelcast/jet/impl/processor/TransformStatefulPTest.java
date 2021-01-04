@@ -16,6 +16,8 @@
 
 package com.hazelcast.jet.impl.processor;
 
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.FunctionEx;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.function.ToLongFunctionEx;
@@ -29,6 +31,8 @@ import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.JetEvent;
 import com.hazelcast.test.HazelcastParallelParametersRunnerFactory;
 import com.hazelcast.test.annotation.ParallelJVMTest;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
@@ -70,6 +74,16 @@ public class TransformStatefulPTest {
     @Parameters(name = "flatMap={0}")
     public static Collection<Object> parameters() {
         return asList(true, false);
+    }
+
+    @Before
+    public void before() {
+        HazelcastInstance hz = Hazelcast.newHazelcastInstance();
+    }
+
+    @After
+    public void after() {
+        Hazelcast.shutdownAll();
     }
 
     @Test

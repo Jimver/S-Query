@@ -16,6 +16,10 @@
 
 package com.hazelcast.jet.impl.processor;
 
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.internal.metrics.Probe;
 import com.hazelcast.internal.util.counters.Counter;
 import com.hazelcast.internal.util.counters.SwCounter;
@@ -28,11 +32,13 @@ import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.datamodel.TimestampedItem;
 import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.util.Util;
+import com.hazelcast.map.IMap;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.lang.reflect.Array;
+import java.util.Collection;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.function.Function;
@@ -60,8 +66,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn;
     @Nullable
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
-    private final Map<K, TimestampedItem<S>> keyToState =
-            new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
+    private final Map<K, TimestampedItem<S>> keyToState;
+    private final IMap<K, TimestampedItem<S>> keyToStateIMap;
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
 
     private final FlatMapper<Watermark, Object> wmFlatMapper = flatMapper(this::flatMapWm);
@@ -86,6 +92,27 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
+
+//        keyToState = new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
+
+        // Get unique mapname from memory address (must be unique per processor!)
+        String[] mapNames = super.toString().split("@");
+        String mapName = mapNames[1];
+
+        Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
+        HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
+
+        Config config = hz.getConfig();
+
+        config.addMapConfig(new MapConfig()
+                .setName(mapName)
+                .setBackupCount(0)
+                .setAsyncBackupCount(0));
+
+        keyToStateIMap = hz.getMap(mapName);
+        keyToState = keyToStateIMap;
+
+        keyToStateIMap.evictAll();
     }
 
     @Override
@@ -106,7 +133,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         TimestampedItem<S> tsAndState = keyToState.computeIfAbsent(key, createIfAbsentFn);
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
-        return statefulFlatMapFn.apply(state, key, event);
+//        System.out.println(String.format("%s: %d", key, ((long[]) state)[0]));
+//        System.out.println();
+        Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
+        tsAndState.setItem(state);
+        keyToStateIMap.set(key, tsAndState);
+        return result;
     }
 
     @Override
@@ -151,7 +183,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     break;
                 }
-                keyToStateIterator.remove();
+//                keyToStateIterator.remove();
+//                keyToState.remove(entry.getKey());
+                keyToStateIMap.evict(entry.getKey());
                 if (onEvictFn != null) {
                     return onEvictFn.apply(entry.getValue().item(), entry.getKey(), currentWm);
                 }
