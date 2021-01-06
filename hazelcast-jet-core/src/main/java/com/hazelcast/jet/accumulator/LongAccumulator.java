@@ -16,12 +16,14 @@
 
 package com.hazelcast.jet.accumulator;
 
+import java.io.Serializable;
+
 /**
  * Mutable container of a {@code long} value.
  *
  * @since 3.0
  */
-public class LongAccumulator {
+public class LongAccumulator implements Serializable {
 
     private long value;
 

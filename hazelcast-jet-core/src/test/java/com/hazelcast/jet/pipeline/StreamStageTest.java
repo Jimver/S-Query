@@ -914,7 +914,7 @@ public class StreamStageTest extends PipelineStreamTestSupport {
                 .groupingKey(i -> min(1, i))
                 .mapStateful(
                         ttl,
-                        Object::new,
+                        () -> new long[]{0},
                         (acc, k, i) -> null,
                         (acc, k, wm) -> entry(k, evictedSignal));
 
@@ -962,7 +962,7 @@ public class StreamStageTest extends PipelineStreamTestSupport {
                 .groupingKey(i -> min(2, i))
                 .mapStateful(
                         ttl,
-                        Object::new,
+                        () -> new long[]{0},
                         (acc, k, i) -> null,
                         (acc, k, wm) -> (k == 1) ? entry(k, evictedSignal) : null
                 );

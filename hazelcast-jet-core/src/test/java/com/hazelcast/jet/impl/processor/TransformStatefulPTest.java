@@ -30,11 +30,11 @@ import com.hazelcast.jet.core.test.TestSupport;
 import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.JetEvent;
 import com.hazelcast.test.HazelcastParallelParametersRunnerFactory;
-import com.hazelcast.test.annotation.ParallelJVMTest;
-import org.junit.After;
-import org.junit.Before;
+//import com.hazelcast.test.annotation.ParallelJVMTest;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
+//import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
@@ -57,7 +57,7 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 
-@Category(ParallelJVMTest.class)
+//@Category(ParallelJVMTest.class)
 @RunWith(Parameterized.class)
 @Parameterized.UseParametersRunnerFactory(HazelcastParallelParametersRunnerFactory.class)
 @SuppressWarnings("checkstyle:declarationorder")
@@ -76,13 +76,13 @@ public class TransformStatefulPTest {
         return asList(true, false);
     }
 
-    @Before
-    public void before() {
+    @BeforeClass
+    public static void before() {
         HazelcastInstance hz = Hazelcast.newHazelcastInstance();
     }
 
-    @After
-    public void after() {
+    @AfterClass
+    public static void after() {
         Hazelcast.shutdownAll();
     }
 
