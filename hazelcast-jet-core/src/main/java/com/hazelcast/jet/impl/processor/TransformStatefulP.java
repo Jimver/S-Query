@@ -42,6 +42,7 @@ import javax.annotation.Nullable;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -123,6 +124,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className)));
         config.addMapConfig(mapConfig[0]);
 
+        // Add map names to Distributed List
+        List<String> stateMapNames = hz.getList("statemapnames");
+        stateMapNames.add(mapName);
         IMAPS_QUEUE.add(mapName);
 
         keyToStateIMap = hz.getMap(mapName);
