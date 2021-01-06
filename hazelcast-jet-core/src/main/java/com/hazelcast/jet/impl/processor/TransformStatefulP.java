@@ -98,8 +98,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.onEvictFn = onEvictFn;
 
         // Get unique mapname from memory address (must be unique per processor!)
-        String[] procNameSplit = super.toString().split("@");
-        String mapName = procNameSplit[1];
+        String mapName = super.toString().split("@")[1];
 
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
@@ -116,8 +115,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 .setPartitioningStrategyConfig(new PartitioningStrategyConfig(new OnePartitionStrategy<K>()))};
         // Store custom attributes here
         IMap<String, String> attributeConfigMap = hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME);
-        attributeConfigMap.forEach((name, className) ->
-                mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className)));
+        attributeConfigMap.forEach(
+                (name, className) -> mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className))
+        );
         config.addMapConfig(mapConfig[0]);
 
         // Add map names to Distributed List
@@ -126,8 +126,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         keyToStateIMap = hz.getMap(mapName);
         keyToState = keyToStateIMap;
-
-        keyToStateIMap.evictAll();
     }
 
     @Override
