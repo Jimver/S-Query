@@ -18,7 +18,9 @@ package com.hazelcast.jet.impl.processor;
 
 import com.hazelcast.config.AttributeConfig;
 import com.hazelcast.config.Config;
+import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.PartitioningStrategyConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.internal.metrics.Probe;
@@ -52,7 +54,6 @@ import static com.hazelcast.jet.core.BroadcastKey.broadcastKey;
 import static com.hazelcast.jet.impl.util.Util.logLateEvent;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
-
 
 public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     // Store IMap names in here
@@ -112,7 +113,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         final MapConfig[] mapConfig = {new MapConfig()
                 .setName(mapName)
                 .setBackupCount(0)
-                .setAsyncBackupCount(0)};
+                .setAsyncBackupCount(0)
+                .setInMemoryFormat(InMemoryFormat.BINARY)
+                .setStatisticsEnabled(false)
+                .setReadBackupData(false)
+                .setPartitioningStrategyConfig(new PartitioningStrategyConfig(new OnePartitionStrategy<K>()))};
         // Add custom attributes to map config
         ATTRIBUTE_CONFIG_MAP.forEach((name, className) ->
                 mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className)));
@@ -209,8 +214,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     continue;
                 }
-//                keyToStateIterator.remove();
-//                keyToState.remove(entry.getKey());
                 keyToStateIMap.evict(entry.getKey());
                 if (onEvictFn != null) {
                     return onEvictFn.apply(entry.getValue().item(), entry.getKey(), currentWm);
