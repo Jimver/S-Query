@@ -40,12 +40,10 @@ import com.hazelcast.map.IMap;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
@@ -57,11 +55,8 @@ import static java.lang.Math.max;
 import static java.lang.Math.min;
 
 public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
-    // Store IMap names in here
-    private static final ConcurrentLinkedQueue<String> IMAPS_QUEUE = new ConcurrentLinkedQueue<>();
-
-    // Store custom attributes here
-    private static final Map<String, String> ATTRIBUTE_CONFIG_MAP = new HashMap<>();
+    public static final String STATE_IMAP_NAMES_LIST_NAME = "statemapnames";
+    public static final String CUSTOM_ATTRIBUTE_IMAP_NAME = "customattributes";
 
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
 
@@ -119,37 +114,20 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 .setStatisticsEnabled(false)
                 .setReadBackupData(false)
                 .setPartitioningStrategyConfig(new PartitioningStrategyConfig(new OnePartitionStrategy<K>()))};
-        // Add custom attributes to map config
-        ATTRIBUTE_CONFIG_MAP.forEach((name, className) ->
+        // Store custom attributes here
+        IMap<String, String> attributeConfigMap = hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME);
+        attributeConfigMap.forEach((name, className) ->
                 mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className)));
         config.addMapConfig(mapConfig[0]);
 
         // Add map names to Distributed List
-        List<String> stateMapNames = hz.getList("statemapnames");
+        List<String> stateMapNames = hz.getList(STATE_IMAP_NAMES_LIST_NAME);
         stateMapNames.add(mapName);
-        IMAPS_QUEUE.add(mapName);
 
         keyToStateIMap = hz.getMap(mapName);
         keyToState = keyToStateIMap;
 
         keyToStateIMap.evictAll();
-    }
-
-    /**
-     * Getter for state IMaps
-     * @return Name of state IMaps for each TransformStatefylP processor.
-     */
-    public static Collection<String> getIMaps() {
-        return IMAPS_QUEUE;
-    }
-
-    /**
-     * Method populating the custom attribute config map.
-     * @param name The name of the custom attribute
-     * @param className The name of the extractor class (Must be on classpath)
-     */
-    public static void addAttributeConfig(@Nonnull String name, @Nonnull String className) {
-        ATTRIBUTE_CONFIG_MAP.put(name, className);
     }
 
     @Override
