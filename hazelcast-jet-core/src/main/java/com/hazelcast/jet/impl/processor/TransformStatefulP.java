@@ -97,11 +97,13 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
 
-        // Get unique mapname from memory address (must be unique per processor!)
-        String mapName = super.toString().split("@")[1];
-
+        // Get HazelCastInstance
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
+
+        // Get unique mapname from memory address (must be unique per processor!)
+        String hzInstanceName = hz.getName();
+        String mapName = hzInstanceName + '-' + super.toString().split("@")[1];
 
         // Add map config
         Config config = hz.getConfig();
