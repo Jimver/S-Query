@@ -39,6 +39,8 @@ import com.hazelcast.map.IMap;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
@@ -101,9 +103,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
 
-        // Get unique mapname from memory address (must be unique per processor!)
-        String hzInstanceName = hz.getName();
-        String mapName = hzInstanceName + '-' + super.toString().split("@")[1];
+        // Get Map name
+        String mapName = getStateImapName(hz);
 
         // Add map config
         Config config = hz.getConfig();
@@ -128,6 +129,22 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         keyToStateIMap = hz.getMap(mapName);
         keyToState = keyToStateIMap;
+    }
+
+    /**
+     * Helper method for state IMap name
+     * @param hz The hazelcast instance
+     * @return The IMap name
+     */
+    private String getStateImapName(HazelcastInstance hz) {
+        // Get unique mapname from memory address (must be unique per processor!)
+        String hzInstanceName = hz.getName();
+        try {
+            hzInstanceName = InetAddress.getLocalHost().getHostName();
+        } catch (UnknownHostException e) {
+            e.printStackTrace();
+        }
+        return hzInstanceName + '-' + super.toString().split("@")[1];
     }
 
     @Override
