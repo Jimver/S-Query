@@ -247,8 +247,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     break;
                 }
-                keyToState.remove(entry.getKey());
                 keyToStateIMap.evict(entry.getKey());
+                keyToState.remove(entry.getKey());
                 if (onEvictFn != null) {
                     getLogger().info(String.format(
                             "Evicting key '%s' with value: %s",
@@ -299,15 +299,17 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         return (snapshotFuture == null) && emitFromTraverserToSnapshot(snapshotTraverser);
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     protected void restoreFromSnapshot(@Nonnull Object key, @Nonnull Object value) {
         if (key instanceof BroadcastKey) {
             assert ((BroadcastKey<?>) key).key() == SnapshotKeys.WATERMARK : "Unexpected " + key;
             long wm = (long) value;
             currentWm = (currentWm == Long.MIN_VALUE) ? wm : min(currentWm, wm);
-        } else {
-            @SuppressWarnings("unchecked")
+        }
+        else {
             TimestampedItem<S> old = keyToState.put((K) key, (TimestampedItem<S>) value);
+            keyToStateIMap.set((K) key, (S) value);
             assert old == null : "Duplicate key '" + key + '\'';
         }
     }
