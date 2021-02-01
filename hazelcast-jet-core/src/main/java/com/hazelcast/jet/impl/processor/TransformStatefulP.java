@@ -42,6 +42,7 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -61,6 +62,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     public static final String SNAPSHOT_IMAP_NAMES_LIST_NAME = "snapshotmapnames";
     public static final String CUSTOM_ATTRIBUTE_IMAP_NAME = "customattributes";
 
+    private static final int HASH_MAP_INITIAL_CAPACITY = 16;
+    private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
 
     @Probe(name = "lateEventsDropped")
@@ -73,9 +76,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn;
     @Nullable
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
-    private final Map<K, TimestampedItem<S>> keyToState;
-    private final IMap<K, TimestampedItem<S>> keyToStateIMap;
-    private final IMap<K, TimestampedItem<S>> snapshotIMap;
+    private final Map<K, TimestampedItem<S>> keyToState = new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
+    private final IMap<K, S> keyToStateIMap;
+    private final IMap<K, S> snapshotIMap;
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
 
     private final FlatMapper<Watermark, Object> wmFlatMapper = flatMapper(this::flatMapWm);
@@ -125,7 +128,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         populateNameLists(hz, mapName, snapshotMapName);
 
         keyToStateIMap = hz.getMap(mapName);
-        keyToState = keyToStateIMap;
         snapshotIMap = hz.getMap(snapshotMapName);
     }
 
@@ -195,12 +197,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return Traversers.empty();
         }
         K key = keyFn.apply(event);
-        TimestampedItem<S> tsAndState = keyToStateIMap.computeIfAbsent(key, createIfAbsentFn);
+        TimestampedItem<S> tsAndState = keyToState.computeIfAbsent(key, createIfAbsentFn);
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
-        tsAndState.setItem(state);
-        keyToStateIMap.set(key, tsAndState);
+        keyToStateIMap.set(key, state);
         return result;
     }
 
@@ -244,8 +245,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 Entry<K, TimestampedItem<S>> entry = keyToStateIterator.next();
                 long lastTouched = entry.getValue().timestamp();
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
-                    continue;
+                    break;
                 }
+                keyToState.remove(entry.getKey());
                 keyToStateIMap.evict(entry.getKey());
                 if (onEvictFn != null) {
                     getLogger().info(String.format(
