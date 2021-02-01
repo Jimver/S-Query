@@ -248,7 +248,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     break;
                 }
                 keyToStateIMap.evict(entry.getKey());
-                keyToState.remove(entry.getKey());
+                keyToStateIterator.remove();
                 if (onEvictFn != null) {
                     getLogger().info(String.format(
                             "Evicting key '%s' with value: %s",
