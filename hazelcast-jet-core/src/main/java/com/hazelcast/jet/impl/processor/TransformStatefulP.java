@@ -20,7 +20,6 @@ import com.hazelcast.config.AttributeConfig;
 import com.hazelcast.config.Config;
 import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
-import com.hazelcast.config.PartitioningStrategyConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.internal.metrics.Probe;
@@ -46,6 +45,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
@@ -58,6 +58,7 @@ import static java.lang.Math.min;
 
 public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     public static final String STATE_IMAP_NAMES_LIST_NAME = "statemapnames";
+    public static final String SNAPSHOT_IMAP_NAMES_LIST_NAME = "snapshotmapnames";
     public static final String CUSTOM_ATTRIBUTE_IMAP_NAME = "customattributes";
 
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
@@ -74,6 +75,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
     private final Map<K, TimestampedItem<S>> keyToState;
     private final IMap<K, TimestampedItem<S>> keyToStateIMap;
+    private final IMap<K, TimestampedItem<S>> snapshotIMap;
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
 
     private final FlatMapper<Watermark, Object> wmFlatMapper = flatMapper(this::flatMapWm);
@@ -82,7 +84,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     private long currentWm = Long.MIN_VALUE;
     private Traverser<? extends Entry<?, ?>> snapshotTraverser;
+    private CompletableFuture<Void> snapshotFuture;
     private boolean inComplete;
+
+    // Timer variables
+    private long snapshotIMapStartTime;
+    private long snapshotTraverserStartTime;
 
     public TransformStatefulP(
             long ttl,
@@ -103,36 +110,62 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
 
-        // Get Map name
+        // Get Map names
         String mapName = getStateImapName(hz);
+        String snapshotMapName = "snapshot-" + mapName;
 
         // Add map config
         Config config = hz.getConfig();
+        MapConfig stateMapConfig = getMapConfig(mapName, hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME));
+        MapConfig snapshotMapConfig = getMapConfig(snapshotMapName, hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME));
+        config.addMapConfig(stateMapConfig);
+        config.addMapConfig(snapshotMapConfig);
+
+        // Add map names to Distributed List
+        populateNameLists(hz, mapName, snapshotMapName);
+
+        keyToStateIMap = hz.getMap(mapName);
+        keyToState = keyToStateIMap;
+        snapshotIMap = hz.getMap(snapshotMapName);
+    }
+
+    /**
+     * Helper method populating the name Lists.
+     * @param hz Hazelcast instance
+     * @param stateMapName State IMap name
+     * @param snapshotMapName Snapshot IMap name
+     */
+    private void populateNameLists(HazelcastInstance hz, String stateMapName, String snapshotMapName) {
+        List<String> stateMapNames = hz.getList(STATE_IMAP_NAMES_LIST_NAME);
+        stateMapNames.add(stateMapName);
+        List<String> snapshotMapNames = hz.getList(SNAPSHOT_IMAP_NAMES_LIST_NAME);
+        snapshotMapNames.add(snapshotMapName);
+    }
+
+    /**
+     * Helper for getting an IMap config.
+     * @param mapName Name of the IMap
+     * @param attributeConfigs Custom attribute Map
+     * @return The MapConfig with the correct name and custom attributes
+     */
+    private MapConfig getMapConfig(String mapName, Map<String, String> attributeConfigs) {
         final MapConfig[] mapConfig = {new MapConfig()
                 .setName(mapName)
                 .setBackupCount(0)
                 .setAsyncBackupCount(0)
                 .setInMemoryFormat(InMemoryFormat.BINARY)
                 .setStatisticsEnabled(false)
-                .setReadBackupData(false)
-                .setPartitioningStrategyConfig(new PartitioningStrategyConfig(new OnePartitionStrategy<K>()))};
+                .setReadBackupData(false)};
+//                .setPartitioningStrategyConfig(new PartitioningStrategyConfig(new OnePartitionStrategy<K>()))};
         // Store custom attributes here
-        IMap<String, String> attributeConfigMap = hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME);
-        attributeConfigMap.forEach(
+        attributeConfigs.forEach(
                 (name, className) -> mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className))
         );
-        config.addMapConfig(mapConfig[0]);
-
-        // Add map names to Distributed List
-        List<String> stateMapNames = hz.getList(STATE_IMAP_NAMES_LIST_NAME);
-        stateMapNames.add(mapName);
-
-        keyToStateIMap = hz.getMap(mapName);
-        keyToState = keyToStateIMap;
+        return mapConfig[0];
     }
 
     /**
-     * Helper method for state IMap name
+     * Helper method for state IMap name.
      * @param hz The hazelcast instance
      * @return The IMap name
      */
@@ -215,6 +248,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 }
                 keyToStateIMap.evict(entry.getKey());
                 if (onEvictFn != null) {
+                    getLogger().info(String.format(
+                            "Evicting key '%s' with value: %s",
+                            entry.getKey(),
+                            entry.getValue().item()));
                     return onEvictFn.apply(entry.getValue().item(), entry.getKey(), currentWm);
                 }
             }
@@ -234,12 +271,30 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             // writing a snapshot, we finish the final items and save no state.
             return complete();
         }
+
+        // Snapshot IMap which has the same structure as the key to state IMap
+        if (snapshotFuture == null) {
+            snapshotIMapStartTime = System.nanoTime();
+            snapshotFuture = snapshotIMap.setAllAsync(keyToStateIMap).toCompletableFuture();
+        }
+        if (snapshotFuture.isDone()) {
+            long snapshotFinish = System.nanoTime() - snapshotIMapStartTime;
+            getLogger().info("Snapshot IMap time: " + snapshotFinish);
+            snapshotFuture = null;
+        }
+
+        // Traditional snapshot traverser
         if (snapshotTraverser == null) {
+            snapshotTraverserStartTime = System.nanoTime();
             snapshotTraverser = Traversers.<Entry<?, ?>>traverseIterable(keyToState.entrySet())
                     .append(entry(broadcastKey(SnapshotKeys.WATERMARK), currentWm))
-                    .onFirstNull(() -> snapshotTraverser = null);
+                    .onFirstNull(() -> {
+                        snapshotTraverser = null;
+                        long snapshotTraverserTime = System.nanoTime() - snapshotTraverserStartTime;
+                        getLogger().info("Snapshot traverser time: " + snapshotTraverserTime);
+                    });
         }
-        return emitFromTraverserToSnapshot(snapshotTraverser);
+        return (snapshotFuture == null) && emitFromTraverserToSnapshot(snapshotTraverser);
     }
 
     @Override

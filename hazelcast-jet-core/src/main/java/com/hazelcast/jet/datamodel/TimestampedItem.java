@@ -44,23 +44,9 @@ public class TimestampedItem<T> {
     }
 
     /**
-     * Returns the timestamp. This method signature IS recognized by Hazelcast SQL.
-     */
-    public long getTimestamp() {
-        return timestamp();
-    }
-
-    /**
      * Returns the item.
      */
     public T item() {
-        return item;
-    }
-
-    /**
-     * Returns the item. This method signature IS recognized by Hazelcast SQL.
-     */
-    public T getItem() {
         return item;
     }
 
