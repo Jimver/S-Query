@@ -76,7 +76,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn;
     @Nullable
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
-    private final Map<K, TimestampedItem<S>> keyToState = new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
+    private final Map<K, TimestampedItem<S>> keyToState =
+            new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
     private final IMap<K, S> keyToStateIMap;
     private final IMap<K, S> snapshotIMap;
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
@@ -306,8 +307,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             assert ((BroadcastKey<?>) key).key() == SnapshotKeys.WATERMARK : "Unexpected " + key;
             long wm = (long) value;
             currentWm = (currentWm == Long.MIN_VALUE) ? wm : min(currentWm, wm);
-        }
-        else {
+        } else {
             TimestampedItem<S> old = keyToState.put((K) key, (TimestampedItem<S>) value);
             keyToStateIMap.set((K) key, (S) value);
             assert old == null : "Duplicate key '" + key + '\'';
