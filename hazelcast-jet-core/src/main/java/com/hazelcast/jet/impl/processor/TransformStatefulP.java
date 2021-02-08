@@ -162,7 +162,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         } catch (UnknownHostException e) {
             e.printStackTrace();
         }
-        // Return IMap name as combineation of node, vertex, and processor address
+        // Return IMap name as combination of node, vertex, and processor address
         return String.format("%s-%s-%s", hzInstanceName, vertexName, super.toString().split("@")[1]);
     }
 
