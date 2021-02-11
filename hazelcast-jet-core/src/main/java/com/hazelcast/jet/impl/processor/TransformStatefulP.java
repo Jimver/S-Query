@@ -16,7 +16,6 @@
 
 package com.hazelcast.jet.impl.processor;
 
-import com.hazelcast.config.AttributeConfig;
 import com.hazelcast.config.Config;
 import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
@@ -38,14 +37,16 @@ import com.hazelcast.map.IMap;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.text.MessageFormat;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -59,8 +60,7 @@ import static java.lang.Math.min;
 
 public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     public static final String STATE_IMAP_NAMES_LIST_NAME = "statemapnames";
-    public static final String SNAPSHOT_IMAP_NAMES_LIST_NAME = "snapshotmapnames";
-    public static final String CUSTOM_ATTRIBUTE_IMAP_NAME = "customattributes";
+    public static final String VERTEX_TO_SS_IMAP_NAME = "snapshotmapnames";
 
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
     private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
@@ -78,8 +78,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
     private final Map<K, TimestampedItem<S>> keyToState =
             new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
+    private final Set<K> evictKeys = new HashSet<>();
+    private final Map<SnapshotIMapKey<K>, S> snapshotDelta = new HashMap<>();
     private IMap<K, S> keyToStateIMap;
-    private IMap<K, S> snapshotIMap;
+    private IMap<SnapshotIMapKey<K>, S> snapshotIMap;
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
 
     private final FlatMapper<Watermark, Object> wmFlatMapper = flatMapper(this::flatMapWm);
@@ -97,6 +99,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     // Timer variables
     private long snapshotIMapStartTime;
     private long snapshotTraverserStartTime;
+
+    // Snapshot id
+    private long snapshotId;
 
     public TransformStatefulP(
             long ttl,
@@ -123,17 +128,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private void populateNameLists(HazelcastInstance hz, String stateMapName, String snapshotMapName) {
         List<String> stateMapNames = hz.getList(STATE_IMAP_NAMES_LIST_NAME);
         stateMapNames.add(stateMapName);
-        List<String> snapshotMapNames = hz.getList(SNAPSHOT_IMAP_NAMES_LIST_NAME);
-        snapshotMapNames.add(snapshotMapName);
+        Map<String, String> snapshotMapNames = hz.getMap(VERTEX_TO_SS_IMAP_NAME);
+        snapshotMapNames.put(vertexName, snapshotMapName);
     }
+
+
 
     /**
      * Helper for getting an IMap config.
      * @param mapName Name of the IMap
-     * @param attributeConfigs Custom attribute Map
-     * @return The MapConfig with the correct name and custom attributes
+     * @return The MapConfig with the correct name
      */
-    private MapConfig getMapConfig(String mapName, Map<String, String> attributeConfigs) {
+    private MapConfig getMapConfig(String mapName) {
         final MapConfig[] mapConfig = {new MapConfig()
                 .setName(mapName)
                 .setBackupCount(0)
@@ -141,11 +147,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 .setInMemoryFormat(InMemoryFormat.BINARY)
                 .setStatisticsEnabled(false)
                 .setReadBackupData(false)};
-//                .setPartitioningStrategyConfig(new PartitioningStrategyConfig(new OnePartitionStrategy<K>()))};
-        // Store custom attributes here
-        attributeConfigs.forEach(
-                (name, className) -> mapConfig[0] = mapConfig[0].addAttributeConfig(new AttributeConfig(name, className))
-        );
         return mapConfig[0];
     }
 
@@ -155,15 +156,16 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @return The IMap name consisting of node name, vertex name, and memory address of processor
      */
     private String getStateImapName(HazelcastInstance hz) {
-        // Get local node name
-        String hzInstanceName = hz.getName();
-        try {
-            hzInstanceName = InetAddress.getLocalHost().getHostName();
-        } catch (UnknownHostException e) {
-            e.printStackTrace();
-        }
-        // Return IMap name as combination of node, vertex, and processor address
-        return String.format("%s-%s-%s", hzInstanceName, vertexName, super.toString().split("@")[1]);
+//        // Get local node name
+//        String hzInstanceName = hz.getName();
+//        try {
+//            hzInstanceName = InetAddress.getLocalHost().getHostName();
+//        } catch (UnknownHostException e) {
+//            e.printStackTrace();
+//        }
+//        // Return IMap name as combination of node, vertex, and processor address
+//        //return String.format("%s-%s-%s", hzInstanceName, vertexName, super.toString().split("@")[1]);
+        return vertexName;
     }
 
     @Override
@@ -175,20 +177,23 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         // Get Map names
         this.vertexName = context.vertexName();
         String mapName = getStateImapName(hz);
-        String snapshotMapName = "snapshot-" + mapName;
+        String snapshotMapName0 = MessageFormat.format("snapshot-{0}-0", mapName);
+        String snapshotMapName1 = MessageFormat.format("snapshot-{0}-1", mapName);
 
         // Add map config
         Config config = hz.getConfig();
-        MapConfig stateMapConfig = getMapConfig(mapName, hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME));
-        MapConfig snapshotMapConfig = getMapConfig(snapshotMapName, hz.getMap(CUSTOM_ATTRIBUTE_IMAP_NAME));
+        MapConfig stateMapConfig = getMapConfig(mapName);
+        MapConfig snapshotMapConfig0 = getMapConfig(snapshotMapName0);
+        MapConfig snapshotMapConfig1 = getMapConfig(snapshotMapName1);
         config.addMapConfig(stateMapConfig);
-        config.addMapConfig(snapshotMapConfig);
+        config.addMapConfig(snapshotMapConfig0);
+        config.addMapConfig(snapshotMapConfig1);
 
         // Add map names to Distributed List
-        populateNameLists(hz, mapName, snapshotMapName);
+        populateNameLists(hz, mapName, snapshotMapName0);
 
         keyToStateIMap = hz.getMap(mapName);
-        snapshotIMap = hz.getMap(snapshotMapName);
+        snapshotIMap = hz.getMap(snapshotMapName0);
     }
 
     @Override
@@ -210,7 +215,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
-        keyToStateIMap.set(key, state);
+        keyToStateIMap.set(key, state); // Put to live state IMap
+        snapshotDelta.put(new SnapshotIMapKey<>(key, snapshotId), state); // Put to snapshot delta
         return result;
     }
 
@@ -257,6 +263,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     break;
                 }
                 keyToStateIMap.evict(entry.getKey());
+                evictKeys.add(entry.getKey());
+                snapshotDelta.remove(new SnapshotIMapKey<>(entry.getKey(), snapshotId));
                 keyToStateIterator.remove();
                 if (onEvictFn != null) {
                     getLogger().info(String.format(
@@ -286,10 +294,15 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         // Snapshot IMap which has the same structure as the key to state IMap
         if (snapshotFuture == null) {
             snapshotIMapStartTime = System.nanoTime();
-            snapshotIMap.evictAll();
-            snapshotFuture = snapshotIMap.setAllAsync(keyToStateIMap).toCompletableFuture();
+            snapshotIMap.executeOnEntries(new EvictingEntryProcessor<>(evictKeys));
+            evictKeys.clear();
+            snapshotFuture = snapshotIMap.setAllAsync(
+                    snapshotDelta)
+                    .toCompletableFuture();
+            snapshotId++;
         }
         if (snapshotFuture.isDone()) {
+            snapshotDelta.clear();
             long snapshotFinish = System.nanoTime() - snapshotIMapStartTime;
             getLogger().info("Snapshot IMap time: " + snapshotFinish);
             snapshotFuture = null;
