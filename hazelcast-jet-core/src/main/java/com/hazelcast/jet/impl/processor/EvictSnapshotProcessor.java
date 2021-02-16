@@ -20,18 +20,24 @@ import com.hazelcast.map.EntryProcessor;
 
 import java.io.Serializable;
 import java.util.Map;
-import java.util.Set;
 
-public class EvictingEntryProcessor<K, S> implements EntryProcessor<SnapshotIMapKey<K>, S, Boolean>, Serializable {
-    private final Set<K> keysToEvict;
+public class EvictSnapshotProcessor<K, S>
+        implements EntryProcessor<SnapshotIMapKey<K>, S, Boolean>, Serializable {
+//    private final Set<K> keysToEvict;
+    private final long snapshotId;
 
-    public EvictingEntryProcessor(Set<K> keysToEvict) {
-        this.keysToEvict = keysToEvict;
+    /**
+     * Constructor
+     * @param snapshotId Current snapshot ID
+     */
+    public EvictSnapshotProcessor(long snapshotId) {
+        this.snapshotId = snapshotId;
     }
 
     @Override
     public Boolean process(Map.Entry<SnapshotIMapKey<K>, S> entry) {
-        if (keysToEvict.contains(entry.getKey().getPartitionKey())) {
+        // Remove all snapshot entries from 2 or more snapshots ago
+        if (entry.getKey().getSnapshotId() <= (snapshotId - 2)) {
             entry.setValue(null);
         }
         return true;

@@ -38,19 +38,20 @@ import com.hazelcast.map.IMap;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.text.MessageFormat;
+import java.util.AbstractMap;
+import java.util.ArrayDeque;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Set;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
+import java.util.stream.Collectors;
 
 import static com.hazelcast.jet.Util.entry;
 import static com.hazelcast.jet.core.BroadcastKey.broadcastKey;
@@ -78,8 +79,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
     private final Map<K, TimestampedItem<S>> keyToState =
             new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
-    private final Set<K> evictKeys = new HashSet<>();
-    private final Map<SnapshotIMapKey<K>, S> snapshotDelta = new HashMap<>();
     private IMap<K, S> keyToStateIMap;
     private IMap<SnapshotIMapKey<K>, S> snapshotIMap;
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
@@ -90,7 +89,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     private long currentWm = Long.MIN_VALUE;
     private Traverser<? extends Entry<?, ?>> snapshotTraverser;
-    private CompletableFuture<Void> snapshotFuture;
     private boolean inComplete;
 
     // Stores vertex name
@@ -100,8 +98,29 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private long snapshotIMapStartTime;
     private long snapshotTraverserStartTime;
 
-    // Snapshot id
-    private long snapshotId;
+    // Snapshot variables
+    private long snapshotId; // Snapshot ID
+    private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
+
+    private static class SnapshotQueueItem<K, S> {
+        public enum Operation {
+            PUT,
+            DELETE
+        }
+
+        public final Operation operation;
+        public final Entry<SnapshotIMapKey<K>, S> entry;
+
+        SnapshotQueueItem(Operation operation, Entry<SnapshotIMapKey<K>, S> entry) {
+            this.operation = operation;
+            this.entry = entry;
+        }
+    }
+
+    // Queue for snapshot entries when they cannot immediately be put to the map
+    private final Queue<SnapshotQueueItem<K, S>> snapshotQueue = new ArrayDeque<>();
+    // True when using queue for snapshot IMap updates, so the full state put can be done first
+    private boolean useQueue;
 
     public TransformStatefulP(
             long ttl,
@@ -177,29 +196,87 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         // Get Map names
         this.vertexName = context.vertexName();
         String mapName = getStateImapName(hz);
-        String snapshotMapName0 = MessageFormat.format("snapshot-{0}-0", mapName);
-        String snapshotMapName1 = MessageFormat.format("snapshot-{0}-1", mapName);
+        String snapshotMapName = MessageFormat.format("snapshot-{0}", mapName);
 
         // Add map config
         Config config = hz.getConfig();
         MapConfig stateMapConfig = getMapConfig(mapName);
-        MapConfig snapshotMapConfig0 = getMapConfig(snapshotMapName0);
-        MapConfig snapshotMapConfig1 = getMapConfig(snapshotMapName1);
+        MapConfig snapshotMapConfig0 = getMapConfig(snapshotMapName);
         config.addMapConfig(stateMapConfig);
         config.addMapConfig(snapshotMapConfig0);
-        config.addMapConfig(snapshotMapConfig1);
 
         // Add map names to Distributed List
-        populateNameLists(hz, mapName, snapshotMapName0);
+        populateNameLists(hz, mapName, snapshotMapName);
 
         keyToStateIMap = hz.getMap(mapName);
-        snapshotIMap = hz.getMap(snapshotMapName0);
+        snapshotIMap = hz.getMap(snapshotMapName);
     }
 
     @Override
     @SuppressWarnings("unchecked")
     protected boolean tryProcess(int ordinal, @Nonnull Object item) {
         return flatMapper.tryProcess((T) item);
+    }
+
+    /**
+     * Helper method that processes the internal snapshot Queue until it is empty.
+     */
+    private void processQueue() {
+        // Process the entire queue first
+        while (!snapshotQueue.isEmpty()) {
+            SnapshotQueueItem<K, S> item = snapshotQueue.remove();
+            if (item.operation == SnapshotQueueItem.Operation.PUT) {
+                // PUT operation
+                snapshotIMap.set(item.entry.getKey(), item.entry.getValue()); // Put to snapshot
+            } else {
+                // DELETE operation
+                snapshotIMap.evict(item.entry.getKey()); // Evict from snapshot
+            }
+        }
+        // Queue emptied, disable useQueue state
+        useQueue = false;
+    }
+
+
+    /**
+     * Helper method for processing items to snapshot IMap.
+     * @param key Key of the item
+     * @param state State object
+     * @param snapshotId Snapshot ID corresponding to the state entry
+     * @param operation Put or DELETE operation
+     */
+    private void processSnapshotItem(@Nonnull K key,
+                                     S state,
+                                     long snapshotId,
+                                     @Nonnull SnapshotQueueItem.Operation operation) {
+        checkSnapshotFuture(true);
+        if (snapshotFuture == null) {
+            if (useQueue) {
+                processQueue();
+            }
+            // Putting all state in snapshot and queue is emptied so we can directly put/delete the state to the IMap
+            if (operation == SnapshotQueueItem.Operation.PUT) {
+                snapshotIMap.set(new SnapshotIMapKey<>(key, snapshotId), state);
+            } else {
+                snapshotIMap.evict(new SnapshotIMapKey<>(key, snapshotId));
+            }
+        } else {
+            // Putting all state in snapshot is still in progress so instead put entry to queue
+            if (!useQueue) {
+                // Enable useQueue state
+                useQueue = true;
+                if (!snapshotQueue.isEmpty()) {
+                    getLogger().severe("Invalid state, snapshotQueue should be empty but was: " + snapshotQueue.size());
+                }
+            }
+            // Offer entry to queue
+            snapshotQueue.offer(
+                    new SnapshotQueueItem<>(
+                            operation,
+                            new AbstractMap.SimpleEntry<>(
+                                    new SnapshotIMapKey<>(key, snapshotId),
+                                    state)));
+        }
     }
 
     @Nonnull
@@ -216,7 +293,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
         keyToStateIMap.set(key, state); // Put to live state IMap
-        snapshotDelta.put(new SnapshotIMapKey<>(key, snapshotId), state); // Put to snapshot delta
+        processSnapshotItem(key, state, snapshotId, SnapshotQueueItem.Operation.PUT); // Put state to snapshot IMap
         return result;
     }
 
@@ -262,9 +339,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     break;
                 }
+                // Evict from live state IMap
                 keyToStateIMap.evict(entry.getKey());
-                evictKeys.add(entry.getKey());
-                snapshotDelta.remove(new SnapshotIMapKey<>(entry.getKey(), snapshotId));
+                // Evict from snapshot IMap
+                processSnapshotItem(entry.getKey(), null, snapshotId, SnapshotQueueItem.Operation.DELETE);
                 keyToStateIterator.remove();
                 if (onEvictFn != null) {
                     getLogger().info(String.format(
@@ -283,6 +361,21 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         WATERMARK
     }
 
+    /**
+     * Helper checking snapshot future, prints the time it took to complete the future.
+     * @param clearFuture If true it will set the future to null in case it is done, otherwise it will do nothing
+     */
+    private void checkSnapshotFuture(boolean clearFuture) {
+        // When snapshot future is done
+        if (snapshotFuture != null && snapshotFuture.isDone()) {
+            long snapshotFinish = System.nanoTime() - snapshotIMapStartTime;
+            getLogger().info("Snapshot IMap time: " + snapshotFinish);
+            if (clearFuture) {
+                snapshotFuture = null;
+            }
+        }
+    }
+
     @Override
     public boolean saveToSnapshot() {
         if (inComplete) {
@@ -291,22 +384,34 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return complete();
         }
 
-        // Snapshot IMap which has the same structure as the key to state IMap
+        // Check if snapshot future is not cleared while traverser is finished
+        if (snapshotFuture != null && snapshotTraverser == null) {
+            // Check if previous snapshot is done and clear it if done
+            checkSnapshotFuture(true);
+            if (snapshotFuture == null) {
+                // No puts/deletes were made to snapshot IMap, so snapshot future was never cleared, no problem
+                getLogger().info("No changes to snapshot since last snapshot");
+            } else {
+                // The previous snapshot was not yet finished,
+                // big problem as snapshots can apparently not keep up with snapshot rate
+                getLogger().severe("Invalid state, got to saveToSnapshot() again while previous one was " +
+                        "not finished! Consider increasing time between snapshots!");
+            }
+        }
+
+        // Only execute the remove and snapshot once
         if (snapshotFuture == null) {
             snapshotIMapStartTime = System.nanoTime();
-            snapshotIMap.executeOnEntries(new EvictingEntryProcessor<>(evictKeys));
-            evictKeys.clear();
-            snapshotFuture = snapshotIMap.setAllAsync(
-                    snapshotDelta)
-                    .toCompletableFuture();
-            snapshotId++;
+            snapshotIMap.executeOnEntries(new EvictSnapshotProcessor<>(snapshotId)); // Evict older snapshot entries
+            snapshotId++; // Increment snapshot ID
+            // Put current state in IMap as starting point, do not wait for this
+            snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
+                    entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
+                    entry -> entry.getValue().item()))).toCompletableFuture();
         }
-        if (snapshotFuture.isDone()) {
-            snapshotDelta.clear();
-            long snapshotFinish = System.nanoTime() - snapshotIMapStartTime;
-            getLogger().info("Snapshot IMap time: " + snapshotFinish);
-            snapshotFuture = null;
-        }
+
+        // Only print if it is done, don't clear snapshot future yet
+        checkSnapshotFuture(false);
 
         // Traditional snapshot traverser
         if (snapshotTraverser == null) {
@@ -319,7 +424,13 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                         getLogger().info("Snapshot traverser time: " + snapshotTraverserTime);
                     });
         }
-        return (snapshotFuture == null) && emitFromTraverserToSnapshot(snapshotTraverser);
+        if (emitFromTraverserToSnapshot(snapshotTraverser)) {
+            // Done with emitting from traverse to snapshot
+            checkSnapshotFuture(true);
+            return true;
+        }
+        // Not done yet
+        return false;
     }
 
     @SuppressWarnings("unchecked")
