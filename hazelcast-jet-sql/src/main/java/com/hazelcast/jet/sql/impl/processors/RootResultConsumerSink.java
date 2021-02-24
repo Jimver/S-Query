@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.sql.impl.JetQueryResultProducer;
 import com.hazelcast.jet.sql.impl.JetSqlCoreBackendImpl;
 import com.hazelcast.sql.impl.JetSqlCoreBackend;
-import com.hazelcast.sql.impl.QueryId;
 
 import javax.annotation.Nonnull;
 
@@ -35,24 +34,22 @@ import static com.hazelcast.jet.core.ProcessorMetaSupplier.forceTotalParallelism
 
 public final class RootResultConsumerSink implements Processor {
 
-    private final String queryId;
     private JetQueryResultProducer rootResultConsumer;
 
-    private RootResultConsumerSink(String queryId) {
-        this.queryId = queryId;
+    private RootResultConsumerSink() {
     }
 
     @Override
     public void init(@Nonnull Outbox outbox, @Nonnull Context context) {
         HazelcastInstanceImpl hzInst = (HazelcastInstanceImpl) context.jetInstance().getHazelcastInstance();
         JetSqlCoreBackendImpl jetSqlCoreBackend = hzInst.node.nodeEngine.getService(JetSqlCoreBackend.SERVICE_NAME);
-        rootResultConsumer = jetSqlCoreBackend.getResultConsumerRegistry().remove(queryId);
+        rootResultConsumer = jetSqlCoreBackend.getResultConsumerRegistry().remove(context.jobId());
         assert rootResultConsumer != null;
     }
 
     @Override
     public boolean tryProcess() {
-        rootResultConsumer.check();
+        rootResultConsumer.ensureNotDone();
         return true;
     }
 
@@ -72,9 +69,8 @@ public final class RootResultConsumerSink implements Processor {
         return true;
     }
 
-    public static ProcessorMetaSupplier rootResultConsumerSink(Address initiatorAddress, QueryId queryId) {
-        String queryIdStr = queryId.toString();
-        ProcessorSupplier pSupplier = ProcessorSupplier.of(() -> new RootResultConsumerSink(queryIdStr));
+    public static ProcessorMetaSupplier rootResultConsumerSink(Address initiatorAddress) {
+        ProcessorSupplier pSupplier = ProcessorSupplier.of(() -> new RootResultConsumerSink());
         return forceTotalParallelismOne(pSupplier, initiatorAddress);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package com.hazelcast.jet.sql.impl.connector.keyvalue;
 
+import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.internal.serialization.InternalSerializationService;
 import com.hazelcast.jet.sql.impl.inject.UpsertInjector;
 import com.hazelcast.jet.sql.impl.inject.UpsertTarget;
@@ -32,6 +33,7 @@ import com.hazelcast.sql.impl.type.QueryDataType;
 import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static java.util.Collections.emptyList;
 
@@ -62,8 +64,8 @@ public class KvMetadataNullResolver implements KvMetadataResolver {
     }
 
     @Override
-    public String supportedFormat() {
-        return null;
+    public Stream<String> supportedFormats() {
+        return Stream.of((String) null);
     }
 
     private static class NullQueryTargetDescriptor implements QueryTargetDescriptor {
@@ -82,7 +84,7 @@ public class KvMetadataNullResolver implements KvMetadataResolver {
 
     private static class NullQueryTarget implements QueryTarget {
         @Override
-        public void setTarget(Object target) { }
+        public void setTarget(Object target, Data targetData) { }
 
         @Override
         public QueryExtractor createExtractor(String path, QueryDataType type) {

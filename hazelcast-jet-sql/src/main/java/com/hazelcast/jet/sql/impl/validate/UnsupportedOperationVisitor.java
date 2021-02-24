@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import com.hazelcast.jet.sql.impl.parse.SqlDropSnapshot;
 import com.hazelcast.jet.sql.impl.parse.SqlOption;
 import com.hazelcast.jet.sql.impl.parse.SqlShowStatement;
 import com.hazelcast.sql.impl.calcite.validate.HazelcastSqlOperatorTable;
-import com.hazelcast.sql.impl.calcite.validate.types.HazelcastTypeSystem;
+import com.hazelcast.sql.impl.calcite.validate.types.HazelcastTypeUtils;
 import org.apache.calcite.runtime.CalciteContextException;
 import org.apache.calcite.runtime.Resources.ExInst;
 import org.apache.calcite.sql.JoinConditionType;
@@ -95,6 +95,7 @@ public final class UnsupportedOperationVisitor extends SqlBasicVisitor<Void> {
         SUPPORTED_KINDS.add(SqlKind.MINUS);
         SUPPORTED_KINDS.add(SqlKind.TIMES);
         SUPPORTED_KINDS.add(SqlKind.DIVIDE);
+        SUPPORTED_KINDS.add(SqlKind.MOD);
         SUPPORTED_KINDS.add(SqlKind.MINUS_PREFIX);
         SUPPORTED_KINDS.add(SqlKind.PLUS_PREFIX);
 
@@ -213,7 +214,8 @@ public final class UnsupportedOperationVisitor extends SqlBasicVisitor<Void> {
         if (type.getTypeNameSpec() instanceof SqlUserDefinedTypeNameSpec) {
             SqlIdentifier typeName = type.getTypeName();
 
-            if (HazelcastTypeSystem.isObject(typeName) || HazelcastTypeSystem.isTimestampWithTimeZone(typeName)) {
+            if (HazelcastTypeUtils.isObjectIdentifier(typeName)
+                    || HazelcastTypeUtils.isTimestampWithTimeZoneIdentifier(typeName)) {
                 return null;
             }
         }
@@ -236,6 +238,7 @@ public final class UnsupportedOperationVisitor extends SqlBasicVisitor<Void> {
             case DATE:
             case TIME:
             case TIMESTAMP:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
             case NULL:
                 return null;
 

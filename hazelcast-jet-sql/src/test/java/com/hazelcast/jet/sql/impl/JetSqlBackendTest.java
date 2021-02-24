@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,7 +81,7 @@ public class JetSqlBackendTest {
                 ifNotExists,
                 SqlParserPos.ZERO
         );
-        QueryParseResult parseResult = new QueryParseResult(node, null, null, null);
+        QueryParseResult parseResult = new QueryParseResult(node, null, null, null, false);
 
         // when
         CreateMappingPlan plan = (CreateMappingPlan) sqlBackend.createPlan(null, parseResult, null);
@@ -109,7 +109,7 @@ public class JetSqlBackendTest {
                 ifExists,
                 SqlParserPos.ZERO
         );
-        QueryParseResult parseResult = new QueryParseResult(node, null, null, null);
+        QueryParseResult parseResult = new QueryParseResult(node, null, null, null, false);
 
         // when
         DropMappingPlan plan = (DropMappingPlan) sqlBackend.createPlan(null, parseResult, null);

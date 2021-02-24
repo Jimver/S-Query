@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,10 +36,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static com.hazelcast.jet.sql.impl.connector.SqlConnector.JAVA_FORMAT;
 import static com.hazelcast.jet.sql.impl.connector.SqlConnector.OPTION_KEY_CLASS;
+import static com.hazelcast.jet.sql.impl.connector.SqlConnector.OPTION_KEY_FORMAT;
 import static com.hazelcast.jet.sql.impl.connector.SqlConnector.OPTION_VALUE_CLASS;
+import static com.hazelcast.jet.sql.impl.connector.SqlConnector.OPTION_VALUE_FORMAT;
 import static com.hazelcast.jet.sql.impl.connector.keyvalue.KvMetadataResolvers.extractFields;
 import static com.hazelcast.jet.sql.impl.connector.keyvalue.KvMetadataResolvers.maybeAddDefaultField;
 import static com.hazelcast.sql.impl.extract.QueryPath.KEY;
@@ -59,8 +62,8 @@ public final class KvMetadataJavaResolver implements KvMetadataResolver {
     }
 
     @Override
-    public String supportedFormat() {
-        return JAVA_FORMAT;
+    public Stream<String> supportedFormats() {
+        return Stream.concat(Stream.of(JAVA_FORMAT), JavaClassNameResolver.formats());
     }
 
     @Override
@@ -138,7 +141,8 @@ public final class KvMetadataJavaResolver implements KvMetadataResolver {
                 MappingField mappingField = userFieldsByPath.get(path);
                 if (mappingField != null && !type.getTypeFamily().equals(mappingField.type().getTypeFamily())) {
                     throw QueryException.error("Mismatch between declared and resolved type for field '"
-                            + mappingField.name() + "'");
+                            + mappingField.name() + "'. Declared: " + mappingField.type().getTypeFamily()
+                            + ", resolved: " + type.getTypeFamily());
                 }
             }
             return new ArrayList<>(userFieldsByPath.values());
@@ -228,8 +232,12 @@ public final class KvMetadataJavaResolver implements KvMetadataResolver {
     }
 
     private Class<?> loadClass(boolean isKey, Map<String, String> options) {
+        String formatProperty = options.get(isKey ? OPTION_KEY_FORMAT : OPTION_VALUE_FORMAT);
         String classNameProperty = isKey ? OPTION_KEY_CLASS : OPTION_VALUE_CLASS;
-        String className = options.get(classNameProperty);
+
+        String className = JAVA_FORMAT.equals(formatProperty)
+                ? options.get(classNameProperty)
+                : JavaClassNameResolver.resolveClassName(formatProperty);
 
         if (className == null) {
             throw QueryException.error("Unable to resolve table metadata. Missing '" + classNameProperty + "' option");

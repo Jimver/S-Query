@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,22 +81,24 @@ public class CsvQueryTargetTest {
         QueryExtractor timestampTzExtractor = target.createExtractor("timestampTz", TIMESTAMP_WITH_TZ_OFFSET_DATE_TIME);
         QueryExtractor objectExtractor = target.createExtractor("object", OBJECT);
 
-        target.setTarget(new String[]{
-                null,
-                "string",
-                "true",
-                "127",
-                "32767",
-                "2147483647",
-                "9223372036854775807",
-                "1234567890.1",
-                "123451234567890.1",
-                "9223372036854775.123",
-                "12:23:34",
-                "2020-09-09",
-                "2020-09-09T12:23:34.100",
-                "2020-09-09T12:23:34.200Z",
-                "object"});
+        target.setTarget(
+                new String[]{
+                        null,
+                        "string",
+                        "true",
+                        "127",
+                        "32767",
+                        "2147483647",
+                        "9223372036854775807",
+                        "1234567890.1",
+                        "123451234567890.1",
+                        "9223372036854775.123",
+                        "12:23:34",
+                        "2020-09-09",
+                        "2020-09-09T12:23:34.100",
+                        "2020-09-09T12:23:34.200Z",
+                        "object"},
+                null);
 
         assertThat(topExtractor.get()).isInstanceOf(String[].class);
         assertThat(nonExistingExtractor.get()).isNull();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,18 +37,30 @@ class JetSqlResultImpl extends AbstractSqlResult {
     private final QueryId queryId;
     private final QueryResultProducer rootResultConsumer;
     private final SqlRowMetadata rowMetadata;
+    private final boolean isInfiniteRows;
 
     private ResultIterator<SqlRow> iterator;
 
-    JetSqlResultImpl(QueryId queryId, QueryResultProducer rootResultConsumer, SqlRowMetadata rowMetadata) {
+    JetSqlResultImpl(
+            QueryId queryId,
+            QueryResultProducer rootResultConsumer,
+            SqlRowMetadata rowMetadata,
+            boolean isInfiniteRows
+    ) {
         this.queryId = queryId;
         this.rootResultConsumer = rootResultConsumer;
         this.rowMetadata = rowMetadata;
+        this.isInfiniteRows = isInfiniteRows;
     }
 
     @Override
     public QueryId getQueryId() {
         return queryId;
+    }
+
+    @Override
+    public boolean isInfiniteRows() {
+        return isInfiniteRows;
     }
 
     @Nonnull @Override

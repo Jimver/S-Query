@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package com.hazelcast.jet.sql.impl.extract;
 
+import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.sql.impl.extract.QueryExtractor;
 import com.hazelcast.sql.impl.extract.QueryTarget;
 import com.hazelcast.sql.impl.type.QueryDataType;
@@ -30,7 +31,8 @@ public class AvroQueryTarget implements QueryTarget {
     private GenericRecord record;
 
     @Override
-    public void setTarget(Object target) {
+    public void setTarget(Object target, Data targetData) {
+        assert targetData == null;
         record = (GenericRecord) target;
     }
 

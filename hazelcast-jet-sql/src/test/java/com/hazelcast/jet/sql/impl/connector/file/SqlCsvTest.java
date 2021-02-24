@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -235,7 +235,7 @@ public class SqlCsvTest extends SqlTestSupport {
         );
 
         assertThatThrownBy(() -> sqlService.execute("SELECT * FROM " + name).iterator().hasNext())
-                .hasMessageEndingWith("Cannot convert VARCHAR to INTEGER");
+                .hasMessageEndingWith("Cannot parse VARCHAR value to INTEGER");
     }
 
     @Test

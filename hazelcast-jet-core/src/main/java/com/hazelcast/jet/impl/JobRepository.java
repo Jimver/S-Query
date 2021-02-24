@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -203,8 +203,7 @@ public class JobRepository {
      */
     @SuppressFBWarnings(value = "RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE",
             justification = "it's a false positive since java 11: https://github.com/spotbugs/spotbugs/issues/756")
-    long uploadJobResources(JobConfig jobConfig) {
-        long jobId = newJobId();
+    long uploadJobResources(long jobId, JobConfig jobConfig) {
         Map<String, byte[]> tmpMap = new HashMap<>();
         try {
             Supplier<IMap<String, byte[]>> jobFileStorage = Util.memoize(() -> getJobResources(jobId));
@@ -264,7 +263,7 @@ public class JobRepository {
         return baseDir;
     }
 
-    private long newJobId() {
+    public long newJobId() {
         return idGenerator.newId();
     }
 

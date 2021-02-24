@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableMap;
 import com.hazelcast.jet.sql.impl.schema.JetTableFunction;
 import com.hazelcast.jet.sql.impl.schema.JetTableFunctionParameter;
 import com.hazelcast.sql.impl.QueryException;
-import com.hazelcast.sql.impl.calcite.validate.types.HazelcastObjectType;
 import com.hazelcast.sql.impl.calcite.validate.types.HazelcastTypeFactory;
 import junitparams.JUnitParamsRunner;
 import junitparams.Parameters;
@@ -127,11 +126,12 @@ public class JetSqlOperatorTableTest {
     @Parameters(method = "validNodes")
     public void when_getRowTypeWithValidNode_then_returnsValue(SqlNode node, SqlTypeName type, Object expected) {
         SqlUserDefinedTableFunction sqlFunction = function("valid", type);
-        given(tableFunction.getRowType(TYPE_FACTORY, singletonList(expected))).willReturn(HazelcastObjectType.INSTANCE);
+        RelDataType objectType = HazelcastTypeFactory.INSTANCE.createSqlType(SqlTypeName.OTHER);
+        given(tableFunction.getRowType(TYPE_FACTORY, singletonList(expected))).willReturn(objectType);
 
         RelDataType rowType = sqlFunction.getRowType(TYPE_FACTORY, singletonList(node));
 
-        assertThat(rowType).isEqualTo(HazelcastObjectType.INSTANCE);
+        assertThat(rowType).isEqualTo(objectType);
     }
 
     @SuppressWarnings("unused")

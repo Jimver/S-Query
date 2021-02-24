@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@ public class JetService implements ManagedService, MembershipAwareService, LiveO
     private final Thread shutdownHookThread;
 
     private JetConfig config;
-    private JetInstance jetInstance;
+    private AbstractJetInstance jetInstance;
     private Networking networking;
     private TaskletExecutionService taskletExecutionService;
     private JobRepository jobRepository;
@@ -140,7 +140,7 @@ public class JetService implements ManagedService, MembershipAwareService, LiveO
 
         if (sqlCoreBackend != null) {
             try {
-                Method initJetInstanceMethod = sqlCoreBackend.getClass().getMethod("init", JetInstance.class);
+                Method initJetInstanceMethod = sqlCoreBackend.getClass().getMethod("init", AbstractJetInstance.class);
                 initJetInstanceMethod.invoke(sqlCoreBackend, jetInstance);
             } catch (ReflectiveOperationException e) {
                 throw new RuntimeException(e);

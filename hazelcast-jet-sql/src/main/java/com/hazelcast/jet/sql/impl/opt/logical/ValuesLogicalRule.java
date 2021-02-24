@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2020, Hazelcast, Inc. All Rights Reserved.
+ * Copyright (c) 2008-2021, Hazelcast, Inc. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import org.apache.calcite.plan.Convention;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.convert.ConverterRule;
-import org.apache.calcite.rel.core.Values;
 import org.apache.calcite.rel.logical.LogicalValues;
 
 import static com.hazelcast.jet.sql.impl.opt.JetConventions.LOGICAL;
@@ -39,13 +38,13 @@ final class ValuesLogicalRule extends ConverterRule {
 
     @Override
     public RelNode convert(RelNode rel) {
-        Values values = (Values) rel;
+        LogicalValues values = (LogicalValues) rel;
 
         return new ValuesLogicalRel(
                 values.getCluster(),
                 OptUtils.toLogicalConvention(values.getTraitSet()),
                 values.getRowType(),
-                values.getTuples()
+                OptUtils.convert(values.getTuples())
         );
     }
 }
