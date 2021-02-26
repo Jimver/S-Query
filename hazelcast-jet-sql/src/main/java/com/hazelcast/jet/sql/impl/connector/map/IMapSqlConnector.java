@@ -122,6 +122,7 @@ public class IMapSqlConnector implements SqlConnector {
                 keyMetadata.getUpsertTargetDescriptor(),
                 valueMetadata.getUpsertTargetDescriptor(),
                 Collections.emptyList(),
+                PartitionedMapTable.DISTRIBUTION_FIELD_ORDINAL_NONE,
                 hd
         );
     }
