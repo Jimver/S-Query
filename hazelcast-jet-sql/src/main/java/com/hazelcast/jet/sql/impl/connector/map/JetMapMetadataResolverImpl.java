@@ -25,6 +25,7 @@ import com.hazelcast.sql.impl.schema.map.JetMapMetadataResolver;
 import java.util.List;
 
 import static java.util.Collections.emptyList;
+import static java.util.Collections.emptyMap;
 
 public final class JetMapMetadataResolverImpl implements JetMapMetadataResolver {
 
@@ -44,6 +45,13 @@ public final class JetMapMetadataResolverImpl implements JetMapMetadataResolver 
     public Object resolvePortable(ClassDefinition clazz, boolean key) {
         List<MappingField> mappingFields = MetadataPortableResolver.INSTANCE.resolveFields(key, emptyList(), clazz);
         KvMetadata metadata = MetadataPortableResolver.INSTANCE.resolveMetadata(key, mappingFields, clazz);
+        return metadata.getUpsertTargetDescriptor();
+    }
+
+    @Override
+    public Object resolveJson(boolean key) {
+        List<MappingField> mappingFields = MetadataJsonResolver.INSTANCE.resolveAndValidateFields(key, emptyList(), emptyMap(), null);
+        KvMetadata metadata = MetadataJsonResolver.INSTANCE.resolveMetadata(key, mappingFields, emptyMap(), null);
         return metadata.getUpsertTargetDescriptor();
     }
 }

@@ -24,6 +24,7 @@ import com.hazelcast.jet.sql.impl.schema.Mapping;
 import com.hazelcast.sql.SqlResult;
 import com.hazelcast.sql.SqlRowMetadata;
 import com.hazelcast.sql.impl.QueryId;
+import com.hazelcast.sql.impl.explain.QueryExplain;
 import com.hazelcast.sql.impl.optimizer.SqlPlan;
 import com.hazelcast.sql.impl.security.SqlSecurityContext;
 
@@ -59,6 +60,11 @@ interface JetPlan extends SqlPlan {
 
         @Override
         public void checkPermissions(SqlSecurityContext context) {
+        }
+
+        @Override
+        public QueryExplain getExplain() {
+            return null;
         }
 
         Mapping mapping() {
@@ -98,6 +104,11 @@ interface JetPlan extends SqlPlan {
         public void checkPermissions(SqlSecurityContext context) {
         }
 
+        @Override
+        public QueryExplain getExplain() {
+            return null;
+        }
+
         String name() {
             return name;
         }
@@ -131,6 +142,11 @@ interface JetPlan extends SqlPlan {
         @Override
         public void checkPermissions(SqlSecurityContext context) {
             dmlPlan.checkPermissions(context);
+        }
+
+        @Override
+        public QueryExplain getExplain() {
+            return null;
         }
 
         @Override
@@ -175,6 +191,11 @@ interface JetPlan extends SqlPlan {
         public void checkPermissions(SqlSecurityContext context) {
         }
 
+        @Override
+        public QueryExplain getExplain() {
+            return null;
+        }
+
         public String getJobName() {
             return jobName;
         }
@@ -206,6 +227,11 @@ interface JetPlan extends SqlPlan {
         public void checkPermissions(SqlSecurityContext context) {
         }
 
+        @Override
+        public QueryExplain getExplain() {
+            return null;
+        }
+
         public String getJobName() {
             return jobName;
         }
@@ -232,6 +258,11 @@ interface JetPlan extends SqlPlan {
 
         @Override
         public void checkPermissions(SqlSecurityContext context) {
+        }
+
+        @Override
+        public QueryExplain getExplain() {
+            return null;
         }
 
         @Override
@@ -266,6 +297,11 @@ interface JetPlan extends SqlPlan {
 
         @Override
         public void checkPermissions(SqlSecurityContext context) {
+        }
+
+        @Override
+        public QueryExplain getExplain() {
+            return null;
         }
 
         public String getSnapshotName() {
@@ -316,6 +352,11 @@ interface JetPlan extends SqlPlan {
             }
         }
 
+        @Override
+        public QueryExplain getExplain() {
+            return null;
+        }
+
         DAG getDag() {
             return dag;
         }
@@ -358,6 +399,11 @@ interface JetPlan extends SqlPlan {
 
         @Override
         public void checkPermissions(SqlSecurityContext context) {
+        }
+
+        @Override
+        public QueryExplain getExplain() {
+            return null;
         }
     }
 }
