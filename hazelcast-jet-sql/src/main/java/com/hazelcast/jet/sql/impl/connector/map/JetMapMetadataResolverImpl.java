@@ -50,8 +50,10 @@ public final class JetMapMetadataResolverImpl implements JetMapMetadataResolver 
 
     @Override
     public Object resolveJson(boolean key) {
-        List<MappingField> mappingFields = MetadataJsonResolver.INSTANCE.resolveAndValidateFields(key, emptyList(), emptyMap(), null);
-        KvMetadata metadata = MetadataJsonResolver.INSTANCE.resolveMetadata(key, mappingFields, emptyMap(), null);
+        List<MappingField> mappingFields = MetadataJsonResolver.INSTANCE.resolveAndValidateFields(
+                key, emptyList(), emptyMap(), null);
+        KvMetadata metadata = MetadataJsonResolver.INSTANCE.resolveMetadata(
+                key, mappingFields, emptyMap(), null);
         return metadata.getUpsertTargetDescriptor();
     }
 }
