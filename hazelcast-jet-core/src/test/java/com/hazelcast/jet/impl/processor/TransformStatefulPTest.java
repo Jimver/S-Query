@@ -16,6 +16,8 @@
 
 package com.hazelcast.jet.impl.processor;
 
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.FunctionEx;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.function.ToLongFunctionEx;
@@ -28,9 +30,11 @@ import com.hazelcast.jet.core.test.TestSupport;
 import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.JetEvent;
 import com.hazelcast.test.HazelcastParallelParametersRunnerFactory;
-import com.hazelcast.test.annotation.ParallelJVMTest;
+//import com.hazelcast.test.annotation.ParallelJVMTest;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
+//import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
@@ -53,7 +57,7 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 
-@Category(ParallelJVMTest.class)
+//@Category(ParallelJVMTest.class)
 @RunWith(Parameterized.class)
 @Parameterized.UseParametersRunnerFactory(HazelcastParallelParametersRunnerFactory.class)
 @SuppressWarnings("checkstyle:declarationorder")
@@ -72,6 +76,16 @@ public class TransformStatefulPTest {
         return asList(true, false);
     }
 
+    @BeforeClass
+    public static void before() {
+        HazelcastInstance hz = Hazelcast.newHazelcastInstance();
+    }
+
+    @AfterClass
+    public static void after() {
+        Hazelcast.shutdownAll();
+    }
+
     @Test
     public void mapStateful_noTtl() {
         SupplierEx<Processor> supplier = createSupplier(
@@ -87,18 +101,18 @@ public class TransformStatefulPTest {
                 expandEntryFn);
 
         TestSupport.verifyProcessor(supplier)
-                   .input(asList(
-                           entry("a", 1L),
-                           entry("b", 2L),
-                           entry("a", 3L),
-                           entry("b", 4L)
-                   ))
-                   .expectOutput(asExpandedList(expandEntryFn,
-                           entry("a", 1L),
-                           entry("b", 2L),
-                           entry("a", 4L),
-                           entry("b", 6L)
-                   ));
+                .input(asList(
+                        entry("a", 1L),
+                        entry("b", 2L),
+                        entry("a", 3L),
+                        entry("b", 4L)
+                ))
+                .expectOutput(asExpandedList(expandEntryFn,
+                        entry("a", 1L),
+                        entry("b", 2L),
+                        entry("a", 4L),
+                        entry("b", 6L)
+                ));
     }
 
     @Test
@@ -113,8 +127,8 @@ public class TransformStatefulPTest {
                 expandEntryFn);
 
         TestSupport.verifyProcessor(supplier)
-                   .input(singletonList(entry("a", 1L)))
-                   .expectOutput(emptyList());
+                .input(singletonList(entry("a", 1L)))
+                .expectOutput(emptyList());
     }
 
     @Test
@@ -133,22 +147,22 @@ public class TransformStatefulPTest {
         );
 
         TestSupport.verifyProcessor(supplier)
-                   .input(asList(
-                           jetEvent(0, entry("a", 1L)),
-                           jetEvent(1, entry("b", 2L)),
-                           wm(3), // evict a
-                           jetEvent(3, entry("a", 3L)),
-                           wm(4), // evict b
-                           jetEvent(4, entry("b", 4L))
-                   ))
-                   .expectOutput(asExpandedList(expandJetEventFn,
-                           jetEvent(0, entry("a", 1L)),
-                           jetEvent(1, entry("b", 2L)),
-                           wm(3),
-                           jetEvent(3, entry("a", 3L)),
-                           wm(4),
-                           jetEvent(4, entry("b", 4L))
-                   ));
+                .input(asList(
+                        jetEvent(0, entry("a", 1L)),
+                        jetEvent(1, entry("b", 2L)),
+                        wm(3), // evict a
+                        jetEvent(3, entry("a", 3L)),
+                        wm(4), // evict b
+                        jetEvent(4, entry("b", 4L))
+                ))
+                .expectOutput(asExpandedList(expandJetEventFn,
+                        jetEvent(0, entry("a", 1L)),
+                        jetEvent(1, entry("b", 2L)),
+                        wm(3),
+                        jetEvent(3, entry("a", 3L)),
+                        wm(4),
+                        jetEvent(4, entry("b", 4L))
+                ));
     }
 
     @Test
@@ -228,26 +242,26 @@ public class TransformStatefulPTest {
         );
 
         TestSupport.verifyProcessor(supplier)
-                   .input(asList(
-                           jetEvent(0, entry("a", 1L)),
-                           jetEvent(1, entry("b", 2L)),
-                           wm(3), // evict a
-                           jetEvent(3, entry("a", 3L)),
-                           wm(4), // evict b
-                           jetEvent(4, entry("b", 4L))
-                   ))
-                   .expectOutput(asExpandedList(expandJetEventFn,
-                           jetEvent(0, entry("a", 1L)),
-                           jetEvent(1, entry("b", 2L)),
-                           jetEvent(3, entry("a", evictSignal)),
-                           wm(3),
-                           jetEvent(3, entry("a", 3L)),
-                           jetEvent(4, entry("b", evictSignal)),
-                           wm(4),
-                           jetEvent(4, entry("b", 4L)),
-                           jetEvent(Long.MAX_VALUE, entry("a", 99L)),
-                           jetEvent(Long.MAX_VALUE, entry("b", 99L))
-                   ));
+                .input(asList(
+                        jetEvent(0, entry("a", 1L)),
+                        jetEvent(1, entry("b", 2L)),
+                        wm(3), // evict a
+                        jetEvent(3, entry("a", 3L)),
+                        wm(4), // evict b
+                        jetEvent(4, entry("b", 4L))
+                ))
+                .expectOutput(asExpandedList(expandJetEventFn,
+                        jetEvent(0, entry("a", 1L)),
+                        jetEvent(1, entry("b", 2L)),
+                        jetEvent(3, entry("a", evictSignal)),
+                        wm(3),
+                        jetEvent(3, entry("a", 3L)),
+                        jetEvent(4, entry("b", evictSignal)),
+                        wm(4),
+                        jetEvent(4, entry("b", 4L)),
+                        jetEvent(Long.MAX_VALUE, entry("a", 99L)),
+                        jetEvent(Long.MAX_VALUE, entry("b", 99L))
+                ));
     }
 
     @Test
@@ -282,9 +296,9 @@ public class TransformStatefulPTest {
         }
 
         TestSupport.verifyProcessor(supplier)
-                   .input(input)
-                   .disableLogging()
-                   .expectOutput(asExpandedList(expandJetEventFn, input.toArray()));
+                .input(input)
+                .disableLogging()
+                .expectOutput(asExpandedList(expandJetEventFn, input.toArray()));
     }
 
     @Test
@@ -302,17 +316,17 @@ public class TransformStatefulPTest {
         );
 
         TestSupport.verifyProcessor(supplier)
-                   .input(asList(
-                           jetEvent(0, 1L),
-                           jetEvent(1, 2L),
-                           wm(3), // evict a
-                           jetEvent(0, 1L)
-                   ))
-                   .expectOutput(asList(
-                           jetEvent(0, 1L),
-                           jetEvent(1, 3L),
-                           wm(3)
-        ));
+                .input(asList(
+                        jetEvent(0, 1L),
+                        jetEvent(1, 2L),
+                        wm(3), // evict a
+                        jetEvent(0, 1L)
+                ))
+                .expectOutput(asList(
+                        jetEvent(0, 1L),
+                        jetEvent(1, 3L),
+                        wm(3)
+                ));
     }
 
     @Test
@@ -331,24 +345,24 @@ public class TransformStatefulPTest {
         );
 
         TestSupport.verifyProcessor(supplier)
-                   .input(asList(
-                           jetEvent(-10, entry("a", 1L)),
-                           jetEvent(-9, entry("b", 2L)),
-                           wm(-7), // evict a
-                           jetEvent(-7, entry("a", 3L)),
-                           jetEvent(-7, entry("b", 3L)),
-                           wm(-4), // evict b
-                           jetEvent(-4, entry("b", 4L))
-                   ))
-                   .expectOutput(asExpandedList(expandJetEventFn,
-                           jetEvent(-10, entry("a", 1L)),
-                           jetEvent(-9, entry("b", 2L)),
-                           wm(-7),
-                           jetEvent(-7, entry("a", 3L)),
-                           jetEvent(-7, entry("b", 5L)),
-                           wm(-4),
-                           jetEvent(-4, entry("b", 4L))
-                   ));
+                .input(asList(
+                        jetEvent(-10, entry("a", 1L)),
+                        jetEvent(-9, entry("b", 2L)),
+                        wm(-7), // evict a
+                        jetEvent(-7, entry("a", 3L)),
+                        jetEvent(-7, entry("b", 3L)),
+                        wm(-4), // evict b
+                        jetEvent(-4, entry("b", 4L))
+                ))
+                .expectOutput(asExpandedList(expandJetEventFn,
+                        jetEvent(-10, entry("a", 1L)),
+                        jetEvent(-9, entry("b", 2L)),
+                        wm(-7),
+                        jetEvent(-7, entry("a", 3L)),
+                        jetEvent(-7, entry("b", 5L)),
+                        wm(-4),
+                        jetEvent(-4, entry("b", 4L))
+                ));
     }
 
     private <OUT> List<Object> asExpandedList(Function<OUT, Traverser<OUT>> expandFn, Object ... items) {
@@ -387,9 +401,9 @@ public class TransformStatefulPTest {
                     },
                     onEvictFn != null
                             ? (s, k, wm) -> {
-                                R r = onEvictFn.apply(s, k, wm);
-                                return r != null ? flatMapExpandFn.apply(r) : Traversers.empty();
-                            }
+                        R r = onEvictFn.apply(s, k, wm);
+                        return r != null ? flatMapExpandFn.apply(r) : Traversers.empty();
+                    }
                             : null);
         } else {
             return Processors.mapStatefulP(ttl, keyFn, timestampFn, createFn, statefulMapFn, onEvictFn);

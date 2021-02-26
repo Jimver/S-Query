@@ -53,6 +53,7 @@ import com.hazelcast.jet.impl.operation.TerminateExecutionOperation;
 import com.hazelcast.jet.impl.operation.TerminateJobOperation;
 import com.hazelcast.jet.impl.processor.SessionWindowP;
 import com.hazelcast.jet.impl.processor.SlidingWindowP.SnapshotKey;
+import com.hazelcast.jet.impl.processor.SnapshotIMapKey;
 import com.hazelcast.jet.impl.util.AsyncSnapshotWriterImpl;
 import com.hazelcast.nio.serialization.DataSerializableFactory;
 import com.hazelcast.nio.serialization.IdentifiedDataSerializable;
@@ -102,6 +103,7 @@ public final class JetInitDataSerializerHook implements DataSerializerHook {
     public static final int WRITE_FILE_P_FILE_ID = 42;
     public static final int JOB_SUSPENSION_CAUSE = 43;
     public static final int GET_JOB_SUSPENSION_CAUSE_OP = 44;
+    public static final int SNAPSHOTIMAP_KEY = 45;
 
     public static final int FACTORY_ID = FactoryIdHelper.getFactoryId(JET_IMPL_DS_FACTORY, JET_IMPL_DS_FACTORY_ID);
 
@@ -200,6 +202,8 @@ public final class JetInitDataSerializerHook implements DataSerializerHook {
                     return new JobSuspensionCauseImpl();
                 case GET_JOB_SUSPENSION_CAUSE_OP:
                     return new GetJobSuspensionCauseOperation();
+                case SNAPSHOTIMAP_KEY:
+                    return new SnapshotIMapKey();
                 default:
                     throw new IllegalArgumentException("Unknown type id " + typeId);
             }
