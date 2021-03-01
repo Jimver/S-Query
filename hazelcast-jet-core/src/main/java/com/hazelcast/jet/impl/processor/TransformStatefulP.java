@@ -21,6 +21,7 @@ import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.cp.IAtomicLong;
 import com.hazelcast.internal.metrics.Probe;
 import com.hazelcast.internal.util.counters.Counter;
 import com.hazelcast.internal.util.counters.SwCounter;
@@ -66,6 +67,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
     private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
+    private static final boolean WAIT_FOR_IMAP_SS = true;
 
     @Probe(name = "lateEventsDropped")
     private final Counter lateEventsDropped = SwCounter.newSwCounter();
@@ -101,6 +103,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     // Snapshot variables
     private long snapshotId; // Snapshot ID
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
+    private IAtomicLong distributedSnapshotId; // Snapshot Id counter distributed
 
     private static class SnapshotQueueItem<K, S> {
         public enum Operation {
@@ -140,8 +143,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     /**
      * Helper method populating the name Lists.
-     * @param hz Hazelcast instance
-     * @param stateMapName State IMap name
+     *
+     * @param hz              Hazelcast instance
+     * @param stateMapName    State IMap name
      * @param snapshotMapName Snapshot IMap name
      */
     private void populateNameLists(HazelcastInstance hz, String stateMapName, String snapshotMapName) {
@@ -152,9 +156,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     }
 
 
-
     /**
      * Helper for getting an IMap config.
+     *
      * @param mapName Name of the IMap
      * @return The MapConfig with the correct name
      */
@@ -171,6 +175,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     /**
      * Helper method for state IMap name.
+     *
      * @param hz The hazelcast instance
      * @return The IMap name consisting of node name, vertex name, and memory address of processor
      */
@@ -210,6 +215,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         keyToStateIMap = hz.getMap(mapName);
         snapshotIMap = hz.getMap(snapshotMapName);
+
+        // Initialize distributed snapshot Id
+        distributedSnapshotId = hz.getCPSubsystem().getAtomicLong("ssid-" + mapName);
     }
 
     @Override
@@ -240,10 +248,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     /**
      * Helper method for processing items to snapshot IMap.
-     * @param key Key of the item
-     * @param state State object
+     *
+     * @param key        Key of the item
+     * @param state      State object
      * @param snapshotId Snapshot ID corresponding to the state entry
-     * @param operation Put or DELETE operation
+     * @param operation  Put or DELETE operation
      */
     private void processSnapshotItem(@Nonnull K key,
                                      S state,
@@ -363,9 +372,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     /**
      * Helper checking snapshot future, prints the time it took to complete the future.
+     * Also returns the result
+     *
      * @param clearFuture If true it will set the future to null in case it is done, otherwise it will do nothing
+     * @return true if snapshotFuture is not null and done, false otherwise
      */
-    private void checkSnapshotFuture(boolean clearFuture) {
+    private boolean checkSnapshotFutureReturn(boolean clearFuture) {
         // When snapshot future is done
         if (snapshotFuture != null && snapshotFuture.isDone()) {
             long snapshotFinish = System.nanoTime() - snapshotIMapStartTime;
@@ -373,7 +385,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             if (clearFuture) {
                 snapshotFuture = null;
             }
+            return true;
         }
+        return false;
+    }
+
+    /**
+     * Helper checking snapshot future, prints the time it took to complete the future.
+     *
+     * @param clearFuture If true it will set the future to null in case it is done, otherwise it will do nothing
+     */
+    private void checkSnapshotFuture(boolean clearFuture) {
+        checkSnapshotFutureReturn(clearFuture);
     }
 
     @Override
@@ -404,10 +427,21 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             snapshotIMapStartTime = System.nanoTime();
             snapshotIMap.executeOnEntries(new EvictSnapshotProcessor<>(snapshotId)); // Evict older snapshot entries
             snapshotId++; // Increment snapshot ID
+            // Alter distributed snapshot Id to be the most recent snapshot Id
+            CompletableFuture<Void> distributedSnapshotIdFuture = distributedSnapshotId.alterAsync(
+                    input -> {
+                        if (input < snapshotId) {
+                            input = snapshotId;
+                        }
+                        return input;
+                    }).toCompletableFuture();
             // Put current state in IMap as starting point, do not wait for this
-            snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
-                    entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
-                    entry -> entry.getValue().item()))).toCompletableFuture();
+            snapshotFuture = distributedSnapshotIdFuture.thenCombine(
+                    snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
+                            entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
+                            entry -> entry.getValue().item()))),
+                    (Void v1, Void v2) -> v2
+            ).toCompletableFuture();
         }
 
         // Only print if it is done, don't clear snapshot future yet
@@ -425,9 +459,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     });
         }
         if (emitFromTraverserToSnapshot(snapshotTraverser)) {
-            // Done with emitting from traverse to snapshot
-            checkSnapshotFuture(true);
-            return true;
+            if (checkSnapshotFutureReturn(true)) {
+                // Done with emitting from traverse to snapshot
+                return true;
+            }
+            // Return true if no need to wait for IMap snapshot
+            return !WAIT_FOR_IMAP_SS;
         }
         // Not done yet
         return false;
