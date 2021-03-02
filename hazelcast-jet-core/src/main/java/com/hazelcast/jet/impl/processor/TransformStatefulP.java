@@ -67,7 +67,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
     private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
-    private static final boolean WAIT_FOR_IMAP_SS = true;
+    private static final boolean WAIT_FOR_IMAP_SS = false;
+    private static final boolean WAIT_FOR_SS_ID = false;
 
     @Probe(name = "lateEventsDropped")
     private final Counter lateEventsDropped = SwCounter.newSwCounter();
@@ -98,12 +99,17 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     // Timer variables
     private long snapshotIMapStartTime;
+    private long snapshotIMapEndTime;
     private long snapshotTraverserStartTime;
+    private long snapshotTraverserEndTime;
+    private long distributedSsIdStartTime;
+    private long distributedSsIdEndTime;
 
     // Snapshot variables
     private long snapshotId; // Snapshot ID
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private IAtomicLong distributedSnapshotId; // Snapshot Id counter distributed
+    private CompletableFuture<Void> distributedSnapshotIdFuture; // Distributed atomic long future
 
     private static class SnapshotQueueItem<K, S> {
         public enum Operation {
@@ -176,19 +182,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     /**
      * Helper method for state IMap name.
      *
-     * @param hz The hazelcast instance
      * @return The IMap name consisting of node name, vertex name, and memory address of processor
      */
-    private String getStateImapName(HazelcastInstance hz) {
-//        // Get local node name
-//        String hzInstanceName = hz.getName();
-//        try {
-//            hzInstanceName = InetAddress.getLocalHost().getHostName();
-//        } catch (UnknownHostException e) {
-//            e.printStackTrace();
-//        }
-//        // Return IMap name as combination of node, vertex, and processor address
-//        //return String.format("%s-%s-%s", hzInstanceName, vertexName, super.toString().split("@")[1]);
+    private String getStateImapName() {
         return vertexName;
     }
 
@@ -200,7 +196,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         // Get Map names
         this.vertexName = context.vertexName();
-        String mapName = getStateImapName(hz);
+        String mapName = getStateImapName();
         String snapshotMapName = MessageFormat.format("snapshot-{0}", mapName);
 
         // Add map config
@@ -380,11 +376,25 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private boolean checkSnapshotFutureReturn(boolean clearFuture) {
         // When snapshot future is done
         if (snapshotFuture != null && snapshotFuture.isDone()) {
-            long snapshotFinish = System.nanoTime() - snapshotIMapStartTime;
-            getLogger().info("Snapshot IMap time: " + snapshotFinish);
+            snapshotIMapEndTime = System.nanoTime();
             if (clearFuture) {
                 snapshotFuture = null;
             }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Helper checking snapshot id future, prints the time it took to complete the future.
+     * Also returns the result
+     *
+     * @return true if distributedSnapshotIdFuture is not null and done, false otherwise
+     */
+    private boolean checkSsIdFuture() {
+        // When snapshot future is done
+        if (distributedSnapshotIdFuture != null && distributedSnapshotIdFuture.isDone()) {
+            distributedSsIdEndTime = System.nanoTime();
             return true;
         }
         return false;
@@ -399,6 +409,78 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         checkSnapshotFutureReturn(clearFuture);
     }
 
+    /**
+     * Helper checking if previous snapshot was finished correctly.
+     */
+    private void checkPreviousSnapshotFinished() {
+        // Entered saveToSnapshot() before previous non blocking snapshotFuture was done
+        if (!WAIT_FOR_IMAP_SS && snapshotFuture != null && snapshotTraverser == null
+                && (!WAIT_FOR_SS_ID || distributedSnapshotIdFuture == null)) {
+            // snapshot Future was not null yet
+            checkSnapshotFuture(true);
+            if (snapshotFuture == null) {
+                // Now it is null so it was never cleared because process() was never called
+                getLogger().info("snapshotFuture was never cleared");
+            } else {
+                // Invalid state, should never go here as the snapshotFuture was not yet finished before next call to
+                // saveSnapshot().
+                getLogger().severe("Invalid state, got to saveToSnapshot() before previous snapshotFuture could " +
+                        "finish! Consider increasing snapshot interval.");
+            }
+        }
+    }
+
+    /**
+     * Logs the execution times of tasks in snapshot phase.
+     */
+    private void logSnapshotExecutionTimes() {
+        getLogger().info("Execute on entries took: " + (distributedSsIdStartTime - snapshotIMapStartTime));
+        if(WAIT_FOR_SS_ID) {
+            getLogger().info("SS id time: " + (distributedSsIdEndTime - distributedSsIdStartTime));
+        }
+        if (WAIT_FOR_IMAP_SS) {
+            getLogger().info("Snapshot IMap time: " + (snapshotIMapEndTime - snapshotIMapStartTime));
+        }
+        getLogger().info("Snapshot traverser time: " + (snapshotTraverserEndTime - snapshotTraverserStartTime));
+    }
+
+    /**
+     * Helper to check if snapshot is done.
+     *
+     * @return true if snapshot is done, false otherwise
+     */
+    private boolean isSnapshotDone() {
+        if (emitFromTraverserToSnapshot(snapshotTraverser)) {
+            boolean ssImapDone = checkSnapshotFutureReturn(false);
+            boolean distSsIdDone = checkSsIdFuture();
+
+            // We don't wait for IMap ss future so mark as done
+            if (!WAIT_FOR_IMAP_SS) {
+                ssImapDone = true;
+            }
+            // Don't wait for dis ss id future so mark as done
+            if (!WAIT_FOR_SS_ID) {
+                distSsIdDone = true;
+            }
+            // Once both are done
+            if (ssImapDone && distSsIdDone) {
+                if (WAIT_FOR_IMAP_SS) {
+                    // Blocking call is done so remove future
+                    snapshotFuture = null;
+                }
+                if (WAIT_FOR_SS_ID) {
+                    // Blocking call is done so remove future
+                    distributedSnapshotIdFuture = null;
+                }
+                // Log execution times
+                logSnapshotExecutionTimes();
+                // Traverse and both futures are done so return true
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public boolean saveToSnapshot() {
         if (inComplete) {
@@ -407,45 +489,23 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return complete();
         }
 
-        // Check if snapshot future is not cleared while traverser is finished
-        if (snapshotFuture != null && snapshotTraverser == null) {
-            // Check if previous snapshot is done and clear it if done
-            checkSnapshotFuture(true);
-            if (snapshotFuture == null) {
-                // No puts/deletes were made to snapshot IMap, so snapshot future was never cleared, no problem
-                getLogger().info("No changes to snapshot since last snapshot");
-            } else {
-                // The previous snapshot was not yet finished,
-                // big problem as snapshots can apparently not keep up with snapshot rate
-                getLogger().severe("Invalid state, got to saveToSnapshot() again while previous one was " +
-                        "not finished! Consider increasing time between snapshots!");
-            }
-        }
+        // Check if previous snapshot was finished correctly
+        checkPreviousSnapshotFinished();
 
         // Only execute the remove and snapshot once
         if (snapshotFuture == null) {
             snapshotIMapStartTime = System.nanoTime();
             snapshotIMap.executeOnEntries(new EvictSnapshotProcessor<>(snapshotId)); // Evict older snapshot entries
+            distributedSsIdStartTime = System.nanoTime();
             snapshotId++; // Increment snapshot ID
             // Alter distributed snapshot Id to be the most recent snapshot Id
-            CompletableFuture<Void> distributedSnapshotIdFuture = distributedSnapshotId.alterAsync(
-                    input -> {
-                        if (input < snapshotId) {
-                            input = snapshotId;
-                        }
-                        return input;
-                    }).toCompletableFuture();
-            // Put current state in IMap as starting point, do not wait for this
-            snapshotFuture = distributedSnapshotIdFuture.thenCombine(
-                    snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
-                            entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
-                            entry -> entry.getValue().item()))),
-                    (Void v1, Void v2) -> v2
-            ).toCompletableFuture();
+            distributedSnapshotIdFuture =
+                    distributedSnapshotId.alterAsync(new AlterSafe(snapshotId)).toCompletableFuture();
+            // Put current state in IMap as starting point
+            snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
+                                entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
+                                entry -> entry.getValue().item()))).toCompletableFuture();
         }
-
-        // Only print if it is done, don't clear snapshot future yet
-        checkSnapshotFuture(false);
 
         // Traditional snapshot traverser
         if (snapshotTraverser == null) {
@@ -454,20 +514,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     .append(entry(broadcastKey(SnapshotKeys.WATERMARK), currentWm))
                     .onFirstNull(() -> {
                         snapshotTraverser = null;
-                        long snapshotTraverserTime = System.nanoTime() - snapshotTraverserStartTime;
-                        getLogger().info("Snapshot traverser time: " + snapshotTraverserTime);
+                        snapshotTraverserEndTime = System.nanoTime();
                     });
         }
-        if (emitFromTraverserToSnapshot(snapshotTraverser)) {
-            if (checkSnapshotFutureReturn(true)) {
-                // Done with emitting from traverse to snapshot
-                return true;
-            }
-            // Return true if no need to wait for IMap snapshot
-            return !WAIT_FOR_IMAP_SS;
-        }
-        // Not done yet
-        return false;
+
+        // Return true if snapshot is done, false otherwise
+        return isSnapshotDone();
     }
 
     @SuppressWarnings("unchecked")
