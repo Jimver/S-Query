@@ -24,14 +24,18 @@ import com.hazelcast.function.ToLongFunctionEx;
 import com.hazelcast.jet.Traverser;
 import com.hazelcast.jet.Traversers;
 import com.hazelcast.jet.core.Processor;
+import com.hazelcast.jet.core.ResettableSingletonTraverser;
 import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.core.processor.Processors;
+import com.hazelcast.jet.core.test.TestOutbox;
+import com.hazelcast.jet.core.test.TestProcessorContext;
 import com.hazelcast.jet.core.test.TestSupport;
 import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.JetEvent;
 import com.hazelcast.test.HazelcastParallelParametersRunnerFactory;
 //import com.hazelcast.test.annotation.ParallelJVMTest;
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 //import org.junit.experimental.categories.Category;
@@ -87,6 +91,60 @@ public class TransformStatefulPTest {
     }
 
     @Test
+    public void mapStateful_useQueue() {
+        long ttl = 0;
+        Supplier<long[]> createState = () -> new long[1];
+        ToLongFunctionEx<Entry<String, Long>> getTimestamp = e -> 0L;
+        FunctionEx<Entry<String, Long>, String> getKey = Entry::getKey;
+        TriFunction<long[], String, Entry<String, Long>, Entry<Object, Long>> mapFunc =
+                (long[] s, String k, Entry<String, Long> e) -> {
+                    s[0] += e.getValue();
+                    return entry(k, s[0]);
+                };
+        final ResettableSingletonTraverser<Entry<Object, Long>> mainTrav = new ResettableSingletonTraverser<>();
+        TriFunction<long[], String, Entry<String, Long>, Traverser<Entry<Object, Long>>> mapTrav =
+                (state, key, item) -> {
+                    mainTrav.accept(mapFunc.apply(state, key, item));
+                    return mainTrav;
+                };
+        TransformStatefulP<Entry<String, Long>, String, long[], Entry<Object, Long>> p =
+                new TransformStatefulP<>(
+                        ttl,
+                        getKey,
+                        getTimestamp,
+                        createState,
+                        mapTrav,
+                        null,
+                        false,
+                        false,
+                        1000L);
+        TestOutbox outbox = new TestOutbox(new int[]{10}, 10);
+        try {
+            p.init(outbox, new TestProcessorContext());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        Assert.assertTrue(p.snapshotFutureIsNull());
+        p.saveToSnapshot();
+        Assert.assertFalse(p.snapshotFutureIsNull());
+        p.processSnapshotItem("1", createState.get(), p.getSnapshotId(),
+                TransformStatefulP.SnapshotQueueItem.Operation.PUT);
+        Assert.assertTrue(p.isUseQueue());
+        Assert.assertEquals(1, p.getQueueSize());
+        p.processSnapshotItem("other", createState.get(), p.getSnapshotId(),
+                TransformStatefulP.SnapshotQueueItem.Operation.PUT);
+        Assert.assertEquals(2, p.getQueueSize());
+        // Wait until snapshot future is done
+        while (!p.checkSnapshotFutureReturn(true)) {
+            // Do nothing
+        }
+        p.processSnapshotItem("other", createState.get(), p.getSnapshotId(),
+                TransformStatefulP.SnapshotQueueItem.Operation.PUT);
+        Assert.assertFalse(p.isUseQueue());
+        Assert.assertEquals(0, p.getQueueSize());
+    }
+
+    @Test
     public void mapStateful_noTtl() {
         SupplierEx<Processor> supplier = createSupplier(
                 0,
@@ -100,13 +158,13 @@ public class TransformStatefulPTest {
                 null,
                 expandEntryFn);
 
-        TestSupport.verifyProcessor(supplier)
-                .input(asList(
-                        entry("a", 1L),
-                        entry("b", 2L),
-                        entry("a", 3L),
-                        entry("b", 4L)
-                ))
+        TestSupport testSupport = TestSupport.verifyProcessor(supplier);
+        testSupport.input(asList(
+                entry("a", 1L),
+                entry("b", 2L),
+                entry("a", 3L),
+                entry("b", 4L)
+        ))
                 .expectOutput(asExpandedList(expandEntryFn,
                         entry("a", 1L),
                         entry("b", 2L),
@@ -365,7 +423,7 @@ public class TransformStatefulPTest {
                 ));
     }
 
-    private <OUT> List<Object> asExpandedList(Function<OUT, Traverser<OUT>> expandFn, Object ... items) {
+    private <OUT> List<Object> asExpandedList(Function<OUT, Traverser<OUT>> expandFn, Object... items) {
         if (!flatMap) {
             return asList(items);
         }

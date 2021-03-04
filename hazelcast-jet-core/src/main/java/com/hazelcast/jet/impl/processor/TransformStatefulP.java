@@ -67,8 +67,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
     private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
-    private static final boolean WAIT_FOR_IMAP_SS = false;
-    private static final boolean WAIT_FOR_SS_ID = false;
 
     @Probe(name = "lateEventsDropped")
     private final Counter lateEventsDropped = SwCounter.newSwCounter();
@@ -110,8 +108,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private IAtomicLong distributedSnapshotId; // Snapshot Id counter distributed
     private CompletableFuture<Void> distributedSnapshotIdFuture; // Distributed atomic long future
+    private final boolean waitForImapSs; // Wait for imap snapshot
+    private final boolean waitForSsId; // Wait for distributed snapshot id update
+    private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
 
-    private static class SnapshotQueueItem<K, S> {
+    static class SnapshotQueueItem<K, S> {
         public enum Operation {
             PUT,
             DELETE
@@ -145,6 +146,62 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
+        this.waitForImapSs = false;
+        this.waitForSsId = false;
+        this.snapshotDelayMillis = 0L;
+    }
+
+    public TransformStatefulP(
+            long ttl,
+            @Nonnull Function<? super T, ? extends K> keyFn,
+            @Nonnull ToLongFunction<? super T> timestampFn,
+            @Nonnull Supplier<? extends S> createFn,
+            @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn,
+            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn,
+            boolean waitForImapSs,
+            boolean waitForSsId,
+            long snapshotDelayMillis
+    ) {
+        this.ttl = ttl > 0 ? ttl : Long.MAX_VALUE;
+        this.keyFn = keyFn;
+        this.timestampFn = timestampFn;
+        this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
+        this.statefulFlatMapFn = statefulFlatMapFn;
+        this.onEvictFn = onEvictFn;
+        this.waitForImapSs = waitForImapSs;
+        this.waitForSsId = waitForSsId;
+        this.snapshotDelayMillis = snapshotDelayMillis;
+    }
+
+    /**
+     * Getter for snapshot queue size.
+     *
+     * @return The size of the snapshot queue
+     */
+    public int getQueueSize() {
+        return snapshotQueue.size();
+    }
+
+    /**
+     * Getter for useQueue.
+     *
+     * @return true if queue is used, false otherwise
+     */
+    public boolean isUseQueue() {
+        return useQueue;
+    }
+
+    /**
+     * Getter for snapshot id.
+     *
+     * @return Current snapshot id
+     */
+    public long getSnapshotId() {
+        return snapshotId;
+    }
+
+    public boolean snapshotFutureIsNull() {
+        return snapshotFuture == null;
     }
 
     /**
@@ -250,7 +307,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @param snapshotId Snapshot ID corresponding to the state entry
      * @param operation  Put or DELETE operation
      */
-    private void processSnapshotItem(@Nonnull K key,
+    void processSnapshotItem(@Nonnull K key,
                                      S state,
                                      long snapshotId,
                                      @Nonnull SnapshotQueueItem.Operation operation) {
@@ -373,7 +430,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @param clearFuture If true it will set the future to null in case it is done, otherwise it will do nothing
      * @return true if snapshotFuture is not null and done, false otherwise
      */
-    private boolean checkSnapshotFutureReturn(boolean clearFuture) {
+    boolean checkSnapshotFutureReturn(boolean clearFuture) {
         // When snapshot future is done
         if (snapshotFuture != null && snapshotFuture.isDone()) {
             snapshotIMapEndTime = System.nanoTime();
@@ -414,8 +471,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      */
     private void checkPreviousSnapshotFinished() {
         // Entered saveToSnapshot() before previous non blocking snapshotFuture was done
-        if (!WAIT_FOR_IMAP_SS && snapshotFuture != null && snapshotTraverser == null
-                && (!WAIT_FOR_SS_ID || distributedSnapshotIdFuture == null)) {
+        if (!waitForImapSs && snapshotFuture != null && snapshotTraverser == null
+                && (!waitForSsId || distributedSnapshotIdFuture == null)) {
             // snapshot Future was not null yet
             checkSnapshotFuture(true);
             if (snapshotFuture == null) {
@@ -435,10 +492,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      */
     private void logSnapshotExecutionTimes() {
         getLogger().info("Execute on entries took: " + (distributedSsIdStartTime - snapshotIMapStartTime));
-        if(WAIT_FOR_SS_ID) {
+        if (waitForSsId) {
             getLogger().info("SS id time: " + (distributedSsIdEndTime - distributedSsIdStartTime));
         }
-        if (WAIT_FOR_IMAP_SS) {
+        if (waitForImapSs) {
             getLogger().info("Snapshot IMap time: " + (snapshotIMapEndTime - snapshotIMapStartTime));
         }
         getLogger().info("Snapshot traverser time: " + (snapshotTraverserEndTime - snapshotTraverserStartTime));
@@ -455,20 +512,20 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             boolean distSsIdDone = checkSsIdFuture();
 
             // We don't wait for IMap ss future so mark as done
-            if (!WAIT_FOR_IMAP_SS) {
+            if (!waitForImapSs) {
                 ssImapDone = true;
             }
             // Don't wait for dis ss id future so mark as done
-            if (!WAIT_FOR_SS_ID) {
+            if (!waitForSsId) {
                 distSsIdDone = true;
             }
             // Once both are done
             if (ssImapDone && distSsIdDone) {
-                if (WAIT_FOR_IMAP_SS) {
+                if (waitForImapSs) {
                     // Blocking call is done so remove future
                     snapshotFuture = null;
                 }
-                if (WAIT_FOR_SS_ID) {
+                if (waitForSsId) {
                     // Blocking call is done so remove future
                     distributedSnapshotIdFuture = null;
                 }
@@ -503,8 +560,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     distributedSnapshotId.alterAsync(new AlterSafe(snapshotId)).toCompletableFuture();
             // Put current state in IMap as starting point
             snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
-                                entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
-                                entry -> entry.getValue().item()))).toCompletableFuture();
+                    entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
+                    entry -> entry.getValue().item()))).toCompletableFuture();
+            if (snapshotDelayMillis != 0L) {
+                snapshotFuture = snapshotFuture.thenRun(() -> {
+                    try {
+                        Thread.sleep(snapshotDelayMillis);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }
         }
 
         // Traditional snapshot traverser
