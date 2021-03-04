@@ -44,7 +44,6 @@ import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Queue;
@@ -61,8 +60,12 @@ import static java.lang.Math.max;
 import static java.lang.Math.min;
 
 public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
-    public static final String STATE_IMAP_NAMES_LIST_NAME = "statemapnames";
-    public static final String VERTEX_TO_SS_IMAP_NAME = "snapshotmapnames";
+    // Name of IMap containing all live state Imap names, where key = vertex name and value = imap name
+    public static final String VERTEX_TO_LIVE_STATE_IMAP_NAME = "statemapnames";
+    // Name of IMap containing all snapshot state Imap names, where key = vertex name and value = imap name
+    public static final String VERTEX_TO_SS_STATE_IMAP_NAME = "snapshotmapnames";
+    // Name of IMap containing all snapshot ID AtomicLong names, where key = vertex name and value = AtomicLong name
+    public static final String VERTEX_TO_SS_ID_IMAP_NAME = "snapshotidnames";
 
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
     private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
@@ -205,17 +208,23 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     }
 
     /**
-     * Helper method populating the name Lists.
+     * Helper method populating the vertex to name lookup maps.
      *
      * @param hz              Hazelcast instance
-     * @param stateMapName    State IMap name
-     * @param snapshotMapName Snapshot IMap name
+     * @param stateMapName    Live state IMap name
+     * @param snapshotMapName Snapshot state IMap name
+     * @param snapshotIdName  Snapshot ID AtomicLong name
      */
-    private void populateNameLists(HazelcastInstance hz, String stateMapName, String snapshotMapName) {
-        List<String> stateMapNames = hz.getList(STATE_IMAP_NAMES_LIST_NAME);
-        stateMapNames.add(stateMapName);
-        Map<String, String> snapshotMapNames = hz.getMap(VERTEX_TO_SS_IMAP_NAME);
+    private void populateVertexLookupImaps(HazelcastInstance hz,
+                                           String stateMapName,
+                                           String snapshotMapName,
+                                           String snapshotIdName) {
+        Map<String, String> stateMapNames = hz.getMap(VERTEX_TO_LIVE_STATE_IMAP_NAME);
+        stateMapNames.put(vertexName, stateMapName);
+        Map<String, String> snapshotMapNames = hz.getMap(VERTEX_TO_SS_STATE_IMAP_NAME);
         snapshotMapNames.put(vertexName, snapshotMapName);
+        Map<String, String> snapshotIdMapNames = hz.getMap(VERTEX_TO_SS_ID_IMAP_NAME);
+        snapshotIdMapNames.put(vertexName, snapshotIdName);
     }
 
 
@@ -251,10 +260,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
 
-        // Get Map names
+        // Get IMap and AtomicLong names
         this.vertexName = context.vertexName();
         String mapName = getStateImapName();
         String snapshotMapName = MessageFormat.format("snapshot-{0}", mapName);
+        String snapshotIdName = MessageFormat.format("ssid-{0}", mapName);
 
         // Add map config
         Config config = hz.getConfig();
@@ -264,13 +274,13 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         config.addMapConfig(snapshotMapConfig0);
 
         // Add map names to Distributed List
-        populateNameLists(hz, mapName, snapshotMapName);
+        populateVertexLookupImaps(hz, mapName, snapshotMapName, snapshotIdName);
 
         keyToStateIMap = hz.getMap(mapName);
         snapshotIMap = hz.getMap(snapshotMapName);
 
         // Initialize distributed snapshot Id
-        distributedSnapshotId = hz.getCPSubsystem().getAtomicLong("ssid-" + mapName);
+        distributedSnapshotId = hz.getCPSubsystem().getAtomicLong(snapshotIdName);
     }
 
     @Override
