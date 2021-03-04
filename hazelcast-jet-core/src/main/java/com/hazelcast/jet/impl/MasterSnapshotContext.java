@@ -16,6 +16,7 @@
 
 package com.hazelcast.jet.impl;
 
+import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.cluster.MemberInfo;
 import com.hazelcast.jet.JetException;
 import com.hazelcast.jet.datamodel.Tuple3;
@@ -25,6 +26,7 @@ import com.hazelcast.jet.impl.execution.init.ExecutionPlan;
 import com.hazelcast.jet.impl.operation.SnapshotPhase2Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation.SnapshotPhase1Result;
+import com.hazelcast.jet.impl.processor.TransformStatefulP;
 import com.hazelcast.jet.impl.util.LoggingUtil;
 import com.hazelcast.logging.ILogger;
 import com.hazelcast.map.IMap;
@@ -88,10 +90,24 @@ class MasterSnapshotContext {
      */
     private final Queue<Tuple3<String, Boolean, CompletableFuture<Void>>> snapshotQueue = new LinkedList<>();
 
+    // Fields for snapshot count down latch
+    private final int numProcessors;
+    private final ICountDownLatch ssCountDownLatch;
+
     MasterSnapshotContext(MasterContext masterContext, ILogger logger) {
         mc = masterContext;
         this.logger = logger;
+
+        int numProc = 0;
+        for (Entry<MemberInfo, ExecutionPlan> test : mc.executionPlanMap().entrySet()) {
+            numProc += test.getValue().getProcessorTaskletCount();
+        }
+        this.numProcessors = numProc;
+        ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                .getCountDownLatch(TransformStatefulP.getCountDownLatchName(mc.jobName()));
     }
+
+
 
     @SuppressWarnings("SameParameterValue") // used by jet-enterprise
     void enqueueSnapshot(String snapshotMapName, boolean isTerminal, CompletableFuture<Void> future) {
@@ -164,6 +180,15 @@ class MasterSnapshotContext {
                 mc.nodeEngine().getHazelcastInstance().getMap(finalMapName).clear();
             logFine(logger, "Starting snapshot %d for %s, flags: %s, writing to: %s",
                     newSnapshotId, mc.jobIdString(), SnapshotFlags.toString(snapshotFlags), snapshotMapName);
+
+            logger.info(String.format("Total number of processors for job: %s, %d", mc.jobName(), numProcessors));
+            boolean succeeded = ssCountDownLatch.trySetCount(numProcessors);
+            if (!succeeded) {
+                logger.severe(String.format(
+                        "Countdown latch not fully counted down for job: %s, snapshot id: %d",
+                        mc.jobName(),
+                        newSnapshotId));
+            }
 
             Function<ExecutionPlan, Operation> factory = plan ->
                     new SnapshotPhase1Operation(mc.jobId(), localExecutionId, newSnapshotId, finalMapName, snapshotFlags);

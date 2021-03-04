@@ -22,6 +22,7 @@ import com.hazelcast.config.MapConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.cp.IAtomicLong;
+import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.metrics.Probe;
 import com.hazelcast.internal.util.counters.Counter;
 import com.hazelcast.internal.util.counters.SwCounter;
@@ -95,8 +96,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private Traverser<? extends Entry<?, ?>> snapshotTraverser;
     private boolean inComplete;
 
-    // Stores vertex name
+    // Store vertex and job name
     private String vertexName;
+    private String jobName;
 
     // Timer variables
     private long snapshotIMapStartTime;
@@ -108,9 +110,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     // Snapshot variables
     private long snapshotId; // Snapshot ID
-    private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private IAtomicLong distributedSnapshotId; // Snapshot Id counter distributed
+    private ICountDownLatch ssCountDownLatch; // Snapshot countdown latch
+    private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private CompletableFuture<Void> distributedSnapshotIdFuture; // Distributed atomic long future
+    private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
     private final boolean waitForImapSs; // Wait for imap snapshot
     private final boolean waitForSsId; // Wait for distributed snapshot id update
     private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
@@ -174,6 +178,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.waitForImapSs = waitForImapSs;
         this.waitForSsId = waitForSsId;
         this.snapshotDelayMillis = snapshotDelayMillis;
+    }
+
+    public static String getCountDownLatchName(String jobName) {
+        return String.format("cdl-%s", jobName);
     }
 
     /**
@@ -262,9 +270,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         // Get IMap and AtomicLong names
         this.vertexName = context.vertexName();
+        this.jobName = context.jobConfig().getName();
         String mapName = getStateImapName();
         String snapshotMapName = MessageFormat.format("snapshot-{0}", mapName);
         String snapshotIdName = MessageFormat.format("ssid-{0}", mapName);
+        String countDownLatchName = getCountDownLatchName(jobName);
 
         // Add map config
         Config config = hz.getConfig();
@@ -281,6 +291,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         // Initialize distributed snapshot Id
         distributedSnapshotId = hz.getCPSubsystem().getAtomicLong(snapshotIdName);
+
+        // Initialize snapshot countdown latch
+        ssCountDownLatch = hz.getCPSubsystem().getCountDownLatch(countDownLatchName);
     }
 
     @Override
@@ -443,9 +456,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     boolean checkSnapshotFutureReturn(boolean clearFuture) {
         // When snapshot future is done
         if (snapshotFuture != null && snapshotFuture.isDone()) {
-            snapshotIMapEndTime = System.nanoTime();
+//            snapshotIMapEndTime = System.nanoTime();
             if (clearFuture) {
                 snapshotFuture = null;
+                countDown();
             }
             return true;
         }
@@ -461,10 +475,33 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private boolean checkSsIdFuture() {
         // When snapshot future is done
         if (distributedSnapshotIdFuture != null && distributedSnapshotIdFuture.isDone()) {
-            distributedSsIdEndTime = System.nanoTime();
+//            distributedSsIdEndTime = System.nanoTime();
             return true;
         }
         return false;
+    }
+
+    /**
+     * Checks the status of the countdown latch future.
+     *
+     * @return true if the future is not null and done, false otherwise
+     */
+    private boolean checkCountDownFuture() {
+        if (countDownFuture != null && countDownFuture.isDone()) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Helper method for counting down the count down latch and measuring the time it takes.
+     */
+    private void countDown() {
+        // Count down
+        long countDownStartTime = System.nanoTime();
+        ssCountDownLatch.countDown();
+        long countDownEndTime = System.nanoTime();
+        getLogger().info("Countdown latch time: " + (countDownEndTime - countDownStartTime));
     }
 
     /**
@@ -534,6 +571,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (waitForImapSs) {
                     // Blocking call is done so remove future
                     snapshotFuture = null;
+                    countDown();
                 }
                 if (waitForSsId) {
                     // Blocking call is done so remove future
@@ -567,15 +605,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             snapshotId++; // Increment snapshot ID
             // Alter distributed snapshot Id to be the most recent snapshot Id
             distributedSnapshotIdFuture =
-                    distributedSnapshotId.alterAsync(new AlterSafe(snapshotId)).toCompletableFuture();
+                    distributedSnapshotId.alterAsync(new AlterSafe(snapshotId)).toCompletableFuture()
+                            .thenRun(() -> distributedSsIdEndTime = System.nanoTime());
             // Put current state in IMap as starting point
             snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
                     entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
-                    entry -> entry.getValue().item()))).toCompletableFuture();
+                    entry -> entry.getValue().item()))).toCompletableFuture()
+                    .thenRun(() -> snapshotIMapEndTime = System.nanoTime());
             if (snapshotDelayMillis != 0L) {
                 snapshotFuture = snapshotFuture.thenRun(() -> {
                     try {
                         Thread.sleep(snapshotDelayMillis);
+                        snapshotIMapEndTime = System.nanoTime();
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                         Thread.currentThread().interrupt();
