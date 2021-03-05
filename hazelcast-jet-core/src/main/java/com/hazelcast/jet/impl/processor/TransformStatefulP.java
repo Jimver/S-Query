@@ -34,6 +34,7 @@ import com.hazelcast.jet.core.ResettableSingletonTraverser;
 import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.datamodel.TimestampedItem;
 import com.hazelcast.jet.function.TriFunction;
+import com.hazelcast.jet.impl.execution.ExecutionContext;
 import com.hazelcast.jet.impl.util.Util;
 import com.hazelcast.map.IMap;
 
@@ -107,6 +108,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private long snapshotTraverserEndTime;
     private long distributedSsIdStartTime;
     private long distributedSsIdEndTime;
+    private long countDownStartTime;
+    private long countDownEndTime;
 
     // Snapshot variables
     private long snapshotId; // Snapshot ID
@@ -117,6 +120,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
     private final boolean waitForImapSs; // Wait for imap snapshot
     private final boolean waitForSsId; // Wait for distributed snapshot id update
+    private final boolean waitForCdl; // Wait for countdown latch
     private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
 
     static class SnapshotQueueItem<K, S> {
@@ -147,15 +151,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn,
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn
     ) {
-        this.ttl = ttl > 0 ? ttl : Long.MAX_VALUE;
-        this.keyFn = keyFn;
-        this.timestampFn = timestampFn;
-        this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
-        this.statefulFlatMapFn = statefulFlatMapFn;
-        this.onEvictFn = onEvictFn;
-        this.waitForImapSs = false;
-        this.waitForSsId = false;
-        this.snapshotDelayMillis = 0L;
+        this(ttl, keyFn, timestampFn, createFn, statefulFlatMapFn, onEvictFn,
+                true,
+                true,
+                true,
+                0L);
     }
 
     public TransformStatefulP(
@@ -167,6 +167,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn,
             boolean waitForImapSs,
             boolean waitForSsId,
+            boolean waitForCdl,
             long snapshotDelayMillis
     ) {
         this.ttl = ttl > 0 ? ttl : Long.MAX_VALUE;
@@ -177,11 +178,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.onEvictFn = onEvictFn;
         this.waitForImapSs = waitForImapSs;
         this.waitForSsId = waitForSsId;
+        this.waitForCdl = waitForCdl;
         this.snapshotDelayMillis = snapshotDelayMillis;
-    }
-
-    public static String getCountDownLatchName(String jobName) {
-        return String.format("cdl-%s", jobName);
     }
 
     /**
@@ -268,13 +266,16 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
 
-        // Get IMap and AtomicLong names
+        // Get IMap, AtomicLong and CountDownLatch names
         this.vertexName = context.vertexName();
         this.jobName = context.jobConfig().getName();
         String mapName = getStateImapName();
         String snapshotMapName = MessageFormat.format("snapshot-{0}", mapName);
         String snapshotIdName = MessageFormat.format("ssid-{0}", mapName);
-        String countDownLatchName = getCountDownLatchName(jobName);
+        String countDownLatchName = ExecutionContext.memberCountdownLatchHelper(
+                context.jetInstance().getCluster().getLocalMember().getUuid(),
+                jobName
+        );
 
         // Add map config
         Config config = hz.getConfig();
@@ -459,7 +460,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 //            snapshotIMapEndTime = System.nanoTime();
             if (clearFuture) {
                 snapshotFuture = null;
-                countDown();
+                countDownAsync();
             }
             return true;
         }
@@ -493,10 +494,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         return false;
     }
 
+    private void countDownAsync() {
+        countDownFuture = CompletableFuture.runAsync(() -> {
+            countDownStartTime = System.nanoTime();
+            ssCountDownLatch.countDown();
+            countDownEndTime = System.nanoTime();
+        });
+    }
+
     /**
      * Helper method for counting down the count down latch and measuring the time it takes.
      */
-    private void countDown() {
+    private void countDownSync() {
         // Count down
         long countDownStartTime = System.nanoTime();
         ssCountDownLatch.countDown();
@@ -545,6 +554,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         if (waitForImapSs) {
             getLogger().info("Snapshot IMap time: " + (snapshotIMapEndTime - snapshotIMapStartTime));
         }
+        if (waitForCdl) {
+            getLogger().info("Countdown latch time: " + (countDownEndTime - countDownStartTime));
+        }
         getLogger().info("Snapshot traverser time: " + (snapshotTraverserEndTime - snapshotTraverserStartTime));
     }
 
@@ -557,6 +569,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         if (emitFromTraverserToSnapshot(snapshotTraverser)) {
             boolean ssImapDone = checkSnapshotFutureReturn(false);
             boolean distSsIdDone = checkSsIdFuture();
+            boolean cdlIsDone = checkCountDownFuture();
 
             // We don't wait for IMap ss future so mark as done
             if (!waitForImapSs) {
@@ -566,16 +579,21 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             if (!waitForSsId) {
                 distSsIdDone = true;
             }
+            if (!waitForCdl) {
+                cdlIsDone = true;
+            }
             // Once both are done
-            if (ssImapDone && distSsIdDone) {
+            if (ssImapDone && distSsIdDone && cdlIsDone) {
+                // Reset futures when waiting for them and they are done
                 if (waitForImapSs) {
-                    // Blocking call is done so remove future
                     snapshotFuture = null;
-                    countDown();
+                    countDownAsync();
                 }
                 if (waitForSsId) {
-                    // Blocking call is done so remove future
                     distributedSnapshotIdFuture = null;
+                }
+                if (waitForCdl) {
+                    countDownFuture = null;
                 }
                 // Log execution times
                 logSnapshotExecutionTimes();

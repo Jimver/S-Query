@@ -21,12 +21,12 @@ import com.hazelcast.internal.cluster.MemberInfo;
 import com.hazelcast.jet.JetException;
 import com.hazelcast.jet.datamodel.Tuple3;
 import com.hazelcast.jet.impl.JobExecutionRecord.SnapshotStats;
+import com.hazelcast.jet.impl.execution.ExecutionContext;
 import com.hazelcast.jet.impl.execution.SnapshotFlags;
 import com.hazelcast.jet.impl.execution.init.ExecutionPlan;
 import com.hazelcast.jet.impl.operation.SnapshotPhase2Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation.SnapshotPhase1Result;
-import com.hazelcast.jet.impl.processor.TransformStatefulP;
 import com.hazelcast.jet.impl.util.LoggingUtil;
 import com.hazelcast.logging.ILogger;
 import com.hazelcast.map.IMap;
@@ -91,23 +91,24 @@ class MasterSnapshotContext {
     private final Queue<Tuple3<String, Boolean, CompletableFuture<Void>>> snapshotQueue = new LinkedList<>();
 
     // Fields for snapshot count down latch
-    private final int numProcessors;
-    private final ICountDownLatch ssCountDownLatch;
+    private ICountDownLatch ssCountDownLatch;
+    private boolean countDownLatchInitialized;
 
     MasterSnapshotContext(MasterContext masterContext, ILogger logger) {
         mc = masterContext;
         this.logger = logger;
-
-        int numProc = 0;
-        for (Entry<MemberInfo, ExecutionPlan> test : mc.executionPlanMap().entrySet()) {
-            numProc += test.getValue().getProcessorTaskletCount();
-        }
-        this.numProcessors = numProc;
-        ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
-                .getCountDownLatch(TransformStatefulP.getCountDownLatchName(mc.jobName()));
     }
 
-
+    /**
+     * Helper method that initializes the countdown latch if it was not initialized already.
+     */
+    private void initCountDownLatchIfNotInitialized() {
+        if (!countDownLatchInitialized) {
+            ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                    .getCountDownLatch(ExecutionContext.clusterCountdownLatchHelper(mc.jobName()));
+            countDownLatchInitialized = true;
+        }
+    }
 
     @SuppressWarnings("SameParameterValue") // used by jet-enterprise
     void enqueueSnapshot(String snapshotMapName, boolean isTerminal, CompletableFuture<Void> future) {
@@ -181,8 +182,11 @@ class MasterSnapshotContext {
             logFine(logger, "Starting snapshot %d for %s, flags: %s, writing to: %s",
                     newSnapshotId, mc.jobIdString(), SnapshotFlags.toString(snapshotFlags), snapshotMapName);
 
-            logger.info(String.format("Total number of processors for job: %s, %d", mc.jobName(), numProcessors));
-            boolean succeeded = ssCountDownLatch.trySetCount(numProcessors);
+            // Countdown latch across members
+            initCountDownLatchIfNotInitialized();
+            logger.info(String.format("Total number of members for this job: %s, %d. Setting cluster latch.",
+                    mc.jobName(), mc.executionPlanMap().size()));
+            boolean succeeded = ssCountDownLatch.trySetCount(mc.executionPlanMap().size());
             if (!succeeded) {
                 logger.severe(String.format(
                         "Countdown latch not fully counted down for job: %s, snapshot id: %d",

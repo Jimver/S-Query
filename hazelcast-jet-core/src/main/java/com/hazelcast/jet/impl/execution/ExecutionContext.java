@@ -17,6 +17,7 @@
 package com.hazelcast.jet.impl.execution;
 
 import com.hazelcast.cluster.Address;
+import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.metrics.DynamicMetricsProvider;
 import com.hazelcast.internal.metrics.MetricDescriptor;
 import com.hazelcast.internal.metrics.MetricsCollectionContext;
@@ -46,9 +47,11 @@ import java.io.File;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import static com.hazelcast.jet.Util.idToString;
 import static com.hazelcast.jet.core.metrics.MetricNames.EXECUTION_COMPLETION_TIME;
@@ -65,6 +68,7 @@ import static java.util.Collections.unmodifiableMap;
  */
 public class ExecutionContext implements DynamicMetricsProvider {
 
+    private static final int MEMBER_SS_CDL_TIMEOUT_SECONDS = 10;
     private final long jobId;
     private final long executionId;
     private final Address coordinator;
@@ -107,6 +111,10 @@ public class ExecutionContext implements DynamicMetricsProvider {
 
     private InternalSerializationService serializationService;
 
+    // Member and cluster level snapshot countdown latch
+    private ICountDownLatch memberSsCountDownLatch;
+    private ICountDownLatch clusterSsCountDownLatch;
+
     public ExecutionContext(NodeEngine nodeEngine, TaskletExecutionService taskletExecService,
                             long jobId, long executionId, Address coordinator, Set<Address> participants) {
         this.jobId = jobId;
@@ -142,7 +150,25 @@ public class ExecutionContext implements DynamicMetricsProvider {
         senderMap = unmodifiableMap(plan.getSenderMap());
         tasklets = plan.getTasklets();
 
+        // Initialize member and cluster snapshot countdown latch
+        memberSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
+                .getCountDownLatch(memberCountdownLatch());
+        clusterSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
+                .getCountDownLatch(memberCountdownLatch());
+
         return this;
+    }
+
+    public static String memberCountdownLatchHelper(UUID memberName, String jobName) {
+        return String.format("cdl-%s-%s", memberName.toString(), jobName);
+    }
+
+    public String memberCountdownLatch() {
+        return memberCountdownLatchHelper(nodeEngine.getLocalMember().getUuid(), jobName);
+    }
+
+    public static String clusterCountdownLatchHelper(String jobName) {
+        return "cdl-" + jobName;
     }
 
     /**
@@ -257,6 +283,23 @@ public class ExecutionContext implements DynamicMetricsProvider {
                         snapshotId, jobNameAndExecutionId());
                 return CompletableFuture.completedFuture(new SnapshotPhase1Result(0, 0, 0, null));
             }
+            logger.info("Trying to set member countdown latch to: " + snapshotContext.getNumPTasklets());
+            memberSsCountDownLatch.trySetCount(snapshotContext.getNumPTasklets());
+            CompletableFuture.runAsync(() -> {
+                try {
+                    boolean result = memberSsCountDownLatch.await(MEMBER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                    if (!result) {
+                        logger.severe("Member snapshot countdown latch was not fully counted down in time! " +
+                                "Still continuing with other snapshot process for job: " + jobName);
+                        return;
+                    }
+                    // Count down cluster level latch for this job
+                    clusterSsCountDownLatch.countDown();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    Thread.currentThread().interrupt();
+                }
+            });
             return snapshotContext.startNewSnapshotPhase1(snapshotId, mapName, flags);
         }
     }

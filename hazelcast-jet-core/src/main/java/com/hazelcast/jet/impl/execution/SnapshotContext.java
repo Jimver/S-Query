@@ -140,6 +140,14 @@ public class SnapshotContext {
     }
 
     /**
+     * Getter for amount of processor tasklets.
+     * @return The amount of active processor tasklets
+     */
+    public int getNumPTasklets() {
+        return numPTasklets;
+    }
+
+    /**
      * Id of the last started snapshot, phase 1.
      */
     long activeSnapshotIdPhase1() {
