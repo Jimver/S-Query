@@ -44,11 +44,13 @@ import java.text.MessageFormat;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -69,6 +71,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     // Name of IMap containing all snapshot ID AtomicLong names, where key = vertex name and value = AtomicLong name
     public static final String VERTEX_TO_SS_ID_IMAP_NAME = "snapshotidnames";
 
+    // True to verify local and in memory key set are equal
+    private static final boolean VERIFY_KEYSET = false;
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
     private static final float HASH_MAP_LOAD_FACTOR = 0.75f;
     private static final Watermark FLUSHING_WATERMARK = new Watermark(Long.MAX_VALUE);
@@ -449,6 +453,24 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     }
 
     /**
+     * Helper method checking if all keys in memory are also in the local key set.
+     */
+    private void checkKeys() {
+        if (VERIFY_KEYSET) {
+            Set<K> localKeySet = snapshotIMap.localKeySet().stream().map(SnapshotIMapKey::getPartitionKey)
+                    .collect(Collectors.toSet());
+            Set<K> memoryKeySet = keyToState.keySet();
+            if (!localKeySet.containsAll(memoryKeySet)) {
+                getLogger().severe("Memory keys are not in local key set!");
+                Set<K> memoryRemain = new HashSet<>(memoryKeySet);
+                memoryRemain.removeIf(localKeySet::contains);
+                memoryRemain.forEach(k ->
+                        getLogger().severe("Key in memory but not in local set: " + k.toString()));
+            }
+        }
+    }
+
+    /**
      * Helper checking snapshot future, prints the time it took to complete the future.
      * Also returns the result
      *
@@ -461,6 +483,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             // In sync mode launch countdown as soon as snapshot Future is done.
             if (countDownFuture == null) {
                 countDownAsync();
+                checkKeys();
             }
             if (clearFuture) {
                 snapshotFuture = null;

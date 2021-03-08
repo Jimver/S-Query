@@ -50,7 +50,7 @@ public class EvictSnapshotProcessor<K, S>
     @Override
     public Boolean process(Map.Entry<SnapshotIMapKey<K>, S> entry) {
         // Remove all snapshot entries from AMOUNT_TO_KEEP or more snapshots ago
-        if (entry.getKey().getSnapshotId() <= (snapshotId - AMOUNT_TO_KEEP)) {
+        if (entry.getKey().getSnapshotId() <= (snapshotId - AMOUNT_TO_KEEP + 1)) {
             entry.setValue(null);
         }
         return true;
