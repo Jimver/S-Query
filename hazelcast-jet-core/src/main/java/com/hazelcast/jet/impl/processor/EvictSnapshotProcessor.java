@@ -21,9 +21,22 @@ import com.hazelcast.map.EntryProcessor;
 import java.io.Serializable;
 import java.util.Map;
 
+/**
+ * Snapshot eviction processor.
+ * This entry processor evicts all keys from the IMap that are older that the
+ * snapshotId given in the constructor by AMOUNT_TO_KEEP amount.
+ *
+ * For example if the snapshotId is 10, and AMOUNT_TO_KEEP is 2:
+ * All entries with snapshot id 8 or less will be deleted, so 9 and 10 will stay.
+ *
+ * @param <K> Key type of the original state IMap
+ * @param <S> State type
+ */
 public class EvictSnapshotProcessor<K, S>
         implements EntryProcessor<SnapshotIMapKey<K>, S, Boolean>, Serializable {
-//    private final Set<K> keysToEvict;
+    // Amount of snapshot IDs to keep in the snapshot IMap.
+    private static final long AMOUNT_TO_KEEP = 2;
+
     private final long snapshotId;
 
     /**
@@ -36,8 +49,8 @@ public class EvictSnapshotProcessor<K, S>
 
     @Override
     public Boolean process(Map.Entry<SnapshotIMapKey<K>, S> entry) {
-        // Remove all snapshot entries from 2 or more snapshots ago
-        if (entry.getKey().getSnapshotId() <= (snapshotId - 2)) {
+        // Remove all snapshot entries from AMOUNT_TO_KEEP or more snapshots ago
+        if (entry.getKey().getSnapshotId() <= (snapshotId - AMOUNT_TO_KEEP)) {
             entry.setValue(null);
         }
         return true;

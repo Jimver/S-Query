@@ -36,6 +36,7 @@ import com.hazelcast.jet.core.metrics.MetricNames;
 import com.hazelcast.jet.core.metrics.MetricTags;
 import com.hazelcast.jet.impl.metrics.MetricsContext;
 import com.hazelcast.jet.impl.processor.ProcessorWrapper;
+import com.hazelcast.jet.impl.processor.TransformStatefulP;
 import com.hazelcast.jet.impl.util.ArrayDequeInbox;
 import com.hazelcast.jet.impl.util.CircularListCursor;
 import com.hazelcast.jet.impl.util.ProgressState;
@@ -209,6 +210,10 @@ public class ProcessorTasklet implements Tasklet {
         collectors[outstreams.length] = ssCollector;
         return new OutboxImpl(collectors, true, progTracker,
                 serializationService, OUTBOX_BATCH_SIZE, emittedCounts);
+    }
+
+    public boolean isTransformStatefulP() {
+        return processor instanceof TransformStatefulP;
     }
 
     @Override

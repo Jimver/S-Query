@@ -116,8 +116,6 @@ public class TransformStatefulPTest {
                         mapTrav,
                         null,
                         false,
-                        false,
-                        false,
                         1000L);
         TestOutbox outbox = new TestOutbox(new int[]{10}, 10);
         try {

@@ -68,7 +68,7 @@ import static java.util.Collections.unmodifiableMap;
  */
 public class ExecutionContext implements DynamicMetricsProvider {
 
-    private static final int MEMBER_SS_CDL_TIMEOUT_SECONDS = 10;
+    private static final int MEMBER_SS_CDL_TIMEOUT_SECONDS = 5;
     private final long jobId;
     private final long executionId;
     private final Address coordinator;
@@ -151,10 +151,14 @@ public class ExecutionContext implements DynamicMetricsProvider {
         tasklets = plan.getTasklets();
 
         // Initialize member and cluster snapshot countdown latch
+        String memberCdlName = memberCountdownLatch();
+        logger.info("Initializing member countdown latch name: " + memberCdlName);
         memberSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
-                .getCountDownLatch(memberCountdownLatch());
+                .getCountDownLatch(memberCdlName);
+        String clusterCdlName = clusterCountdownLatchHelper(jobName);
+        logger.info("Getting cluster countdown latch name: " + clusterCdlName);
         clusterSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
-                .getCountDownLatch(memberCountdownLatch());
+                .getCountDownLatch(clusterCdlName);
 
         return this;
     }
@@ -283,18 +287,34 @@ public class ExecutionContext implements DynamicMetricsProvider {
                         snapshotId, jobNameAndExecutionId());
                 return CompletableFuture.completedFuture(new SnapshotPhase1Result(0, 0, 0, null));
             }
-            logger.info("Trying to set member countdown latch to: " + snapshotContext.getNumPTasklets());
-            memberSsCountDownLatch.trySetCount(snapshotContext.getNumPTasklets());
+
+            // Get amount of transformstateful processor tasklets.
+            int transformStatefulP = (int) this.tasklets.stream()
+                    .filter(t -> {
+                        if (t instanceof ProcessorTasklet) {
+                            ProcessorTasklet tasklet = (ProcessorTasklet) t;
+                            return tasklet.isTransformStatefulP();
+                        }
+                        return false;
+                    })
+                    .count();
+            logger.info("Trying to set member countdown latch to: " + transformStatefulP);
+            memberSsCountDownLatch.trySetCount(transformStatefulP);
             CompletableFuture.runAsync(() -> {
                 try {
+                    long memberCdlStart = System.nanoTime();
                     boolean result = memberSsCountDownLatch.await(MEMBER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                     if (!result) {
                         logger.severe("Member snapshot countdown latch was not fully counted down in time! " +
                                 "Still continuing with other snapshot process for job: " + jobName);
                         return;
                     }
+                    long memberCdlEnd = System.nanoTime();
                     // Count down cluster level latch for this job
                     clusterSsCountDownLatch.countDown();
+                    long clusterCdEnd = System.nanoTime();
+                    logger.info("Member level cdl took: " + (memberCdlEnd - memberCdlStart));
+                    logger.info("Cluster countdown took: " + (clusterCdEnd - memberCdlEnd));
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                     Thread.currentThread().interrupt();

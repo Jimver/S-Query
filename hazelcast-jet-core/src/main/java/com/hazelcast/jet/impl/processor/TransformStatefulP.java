@@ -118,9 +118,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private CompletableFuture<Void> distributedSnapshotIdFuture; // Distributed atomic long future
     private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
-    private final boolean waitForImapSs; // Wait for imap snapshot
-    private final boolean waitForSsId; // Wait for distributed snapshot id update
-    private final boolean waitForCdl; // Wait for countdown latch
+    private final boolean waitForFutures; // Wait for futures
     private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
 
     static class SnapshotQueueItem<K, S> {
@@ -153,8 +151,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     ) {
         this(ttl, keyFn, timestampFn, createFn, statefulFlatMapFn, onEvictFn,
                 true,
-                true,
-                true,
                 0L);
     }
 
@@ -165,9 +161,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nonnull Supplier<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn,
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn,
-            boolean waitForImapSs,
-            boolean waitForSsId,
-            boolean waitForCdl,
+            boolean waitForFutures,
             long snapshotDelayMillis
     ) {
         this.ttl = ttl > 0 ? ttl : Long.MAX_VALUE;
@@ -176,9 +170,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
-        this.waitForImapSs = waitForImapSs;
-        this.waitForSsId = waitForSsId;
-        this.waitForCdl = waitForCdl;
+        this.waitForFutures = waitForFutures;
         this.snapshotDelayMillis = snapshotDelayMillis;
     }
 
@@ -240,7 +232,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @param mapName Name of the IMap
      * @return The MapConfig with the correct name
      */
-    private MapConfig getMapConfig(String mapName) {
+    public static MapConfig getMapConfig(String mapName) {
         final MapConfig[] mapConfig = {new MapConfig()
                 .setName(mapName)
                 .setBackupCount(0)
@@ -256,8 +248,16 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      *
      * @return The IMap name consisting of node name, vertex name, and memory address of processor
      */
-    private String getStateImapName() {
+    private String getLiveStateImapName() {
         return vertexName;
+    }
+
+    public static String getSnapshotMapName(String liveMapName) {
+        return MessageFormat.format("snapshot-{0}", liveMapName);
+    }
+
+    public static String getSnapshotIdName(String liveMapName) {
+        return MessageFormat.format("ssid-{0}", liveMapName);
     }
 
     @Override
@@ -269,25 +269,26 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         // Get IMap, AtomicLong and CountDownLatch names
         this.vertexName = context.vertexName();
         this.jobName = context.jobConfig().getName();
-        String mapName = getStateImapName();
-        String snapshotMapName = MessageFormat.format("snapshot-{0}", mapName);
-        String snapshotIdName = MessageFormat.format("ssid-{0}", mapName);
+        String liveMapName = getLiveStateImapName();
+        String snapshotMapName = getSnapshotMapName(liveMapName);
+        String snapshotIdName = getSnapshotIdName(liveMapName);
         String countDownLatchName = ExecutionContext.memberCountdownLatchHelper(
                 context.jetInstance().getCluster().getLocalMember().getUuid(),
                 jobName
         );
+        getLogger().info("Getting member countdown latch name: " + countDownLatchName);
 
         // Add map config
         Config config = hz.getConfig();
-        MapConfig stateMapConfig = getMapConfig(mapName);
+        MapConfig stateMapConfig = getMapConfig(liveMapName);
         MapConfig snapshotMapConfig0 = getMapConfig(snapshotMapName);
         config.addMapConfig(stateMapConfig);
         config.addMapConfig(snapshotMapConfig0);
 
         // Add map names to Distributed List
-        populateVertexLookupImaps(hz, mapName, snapshotMapName, snapshotIdName);
+        populateVertexLookupImaps(hz, liveMapName, snapshotMapName, snapshotIdName);
 
-        keyToStateIMap = hz.getMap(mapName);
+        keyToStateIMap = hz.getMap(liveMapName);
         snapshotIMap = hz.getMap(snapshotMapName);
 
         // Initialize distributed snapshot Id
@@ -332,10 +333,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @param operation  Put or DELETE operation
      */
     void processSnapshotItem(@Nonnull K key,
-                                     S state,
-                                     long snapshotId,
-                                     @Nonnull SnapshotQueueItem.Operation operation) {
-        checkSnapshotFuture(true);
+                             S state,
+                             long snapshotId,
+                             @Nonnull SnapshotQueueItem.Operation operation) {
+        checkSnapshotFutureClear();
         if (snapshotFuture == null) {
             if (useQueue) {
                 processQueue();
@@ -457,10 +458,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     boolean checkSnapshotFutureReturn(boolean clearFuture) {
         // When snapshot future is done
         if (snapshotFuture != null && snapshotFuture.isDone()) {
-//            snapshotIMapEndTime = System.nanoTime();
+            // In sync mode launch countdown as soon as snapshot Future is done.
+            if (countDownFuture == null) {
+                countDownAsync();
+            }
             if (clearFuture) {
                 snapshotFuture = null;
-                countDownAsync();
             }
             return true;
         }
@@ -476,50 +479,41 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private boolean checkSsIdFuture() {
         // When snapshot future is done
         if (distributedSnapshotIdFuture != null && distributedSnapshotIdFuture.isDone()) {
-//            distributedSsIdEndTime = System.nanoTime();
             return true;
         }
         return false;
     }
 
     /**
-     * Checks the status of the countdown latch future.
+     * Checks the status of the countdown latch future. Sets countDownFuture to null in case it is done.
      *
      * @return true if the future is not null and done, false otherwise
      */
     private boolean checkCountDownFuture() {
         if (countDownFuture != null && countDownFuture.isDone()) {
+            countDownFuture = null;
             return true;
         }
         return false;
     }
 
+    /**
+     * Helper method initializing count down future.
+     */
     private void countDownAsync() {
         countDownFuture = CompletableFuture.runAsync(() -> {
             countDownStartTime = System.nanoTime();
             ssCountDownLatch.countDown();
             countDownEndTime = System.nanoTime();
+            getLogger().info("Latch counted down");
         });
     }
 
     /**
-     * Helper method for counting down the count down latch and measuring the time it takes.
+     * Helper checking snapshot future.
      */
-    private void countDownSync() {
-        // Count down
-        long countDownStartTime = System.nanoTime();
-        ssCountDownLatch.countDown();
-        long countDownEndTime = System.nanoTime();
-        getLogger().info("Countdown latch time: " + (countDownEndTime - countDownStartTime));
-    }
-
-    /**
-     * Helper checking snapshot future, prints the time it took to complete the future.
-     *
-     * @param clearFuture If true it will set the future to null in case it is done, otherwise it will do nothing
-     */
-    private void checkSnapshotFuture(boolean clearFuture) {
-        checkSnapshotFutureReturn(clearFuture);
+    private void checkSnapshotFutureClear() {
+        checkSnapshotFutureReturn(true);
     }
 
     /**
@@ -527,10 +521,16 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      */
     private void checkPreviousSnapshotFinished() {
         // Entered saveToSnapshot() before previous non blocking snapshotFuture was done
-        if (!waitForImapSs && snapshotFuture != null && snapshotTraverser == null
-                && (!waitForSsId || distributedSnapshotIdFuture == null)) {
+        boolean traverserDone = snapshotTraverser == null;
+        boolean snapshotFutureNotDone = snapshotFuture != null;
+        boolean ssIdFutureNotDone = distributedSnapshotIdFuture != null && !distributedSnapshotIdFuture.isDone();
+        checkCountDownFuture(); // Check and clear countDownFuture
+        boolean cdlFutureNotDone = countDownFuture != null && !countDownFuture.isDone();
+        if (!waitForFutures
+                && traverserDone
+                && (snapshotFutureNotDone || ssIdFutureNotDone || cdlFutureNotDone)) {
             // snapshot Future was not null yet
-            checkSnapshotFuture(true);
+            checkSnapshotFutureClear();
             if (snapshotFuture == null) {
                 // Now it is null so it was never cleared because process() was never called
                 getLogger().info("snapshotFuture was never cleared");
@@ -540,6 +540,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 getLogger().severe("Invalid state, got to saveToSnapshot() before previous snapshotFuture could " +
                         "finish! Consider increasing snapshot interval.");
             }
+            if (ssIdFutureNotDone) {
+                getLogger().severe("ssId future not done from previous saveToSnapshot() invocation");
+            }
+            if (cdlFutureNotDone) {
+                getLogger().severe("count down latch future not done from previous saveToSnapshot() invocation");
+            }
         }
     }
 
@@ -547,14 +553,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * Logs the execution times of tasks in snapshot phase.
      */
     private void logSnapshotExecutionTimes() {
-        getLogger().info("Execute on entries took: " + (distributedSsIdStartTime - snapshotIMapStartTime));
-        if (waitForSsId) {
+//        getLogger().info("Execute on entries took: " + (distributedSsIdStartTime - snapshotIMapStartTime));
+        if (waitForFutures) {
             getLogger().info("SS id time: " + (distributedSsIdEndTime - distributedSsIdStartTime));
-        }
-        if (waitForImapSs) {
             getLogger().info("Snapshot IMap time: " + (snapshotIMapEndTime - snapshotIMapStartTime));
-        }
-        if (waitForCdl) {
             getLogger().info("Countdown latch time: " + (countDownEndTime - countDownStartTime));
         }
         getLogger().info("Snapshot traverser time: " + (snapshotTraverserEndTime - snapshotTraverserStartTime));
@@ -572,27 +574,17 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             boolean cdlIsDone = checkCountDownFuture();
 
             // We don't wait for IMap ss future so mark as done
-            if (!waitForImapSs) {
+            if (!waitForFutures) {
                 ssImapDone = true;
-            }
-            // Don't wait for dis ss id future so mark as done
-            if (!waitForSsId) {
                 distSsIdDone = true;
-            }
-            if (!waitForCdl) {
                 cdlIsDone = true;
             }
             // Once both are done
             if (ssImapDone && distSsIdDone && cdlIsDone) {
                 // Reset futures when waiting for them and they are done
-                if (waitForImapSs) {
+                if (waitForFutures) {
                     snapshotFuture = null;
-                    countDownAsync();
-                }
-                if (waitForSsId) {
                     distributedSnapshotIdFuture = null;
-                }
-                if (waitForCdl) {
                     countDownFuture = null;
                 }
                 // Log execution times
@@ -617,15 +609,16 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         // Only execute the remove and snapshot once
         if (snapshotFuture == null) {
-            snapshotIMapStartTime = System.nanoTime();
-            snapshotIMap.executeOnEntries(new EvictSnapshotProcessor<>(snapshotId)); // Evict older snapshot entries
-            distributedSsIdStartTime = System.nanoTime();
+//            snapshotIMapStartTime = System.nanoTime();
+//            snapshotIMap.executeOnEntries(new EvictSnapshotProcessor<>(snapshotId)); // Evict older snapshot entries
             snapshotId++; // Increment snapshot ID
             // Alter distributed snapshot Id to be the most recent snapshot Id
+            distributedSsIdStartTime = System.nanoTime();
             distributedSnapshotIdFuture =
                     distributedSnapshotId.alterAsync(new AlterSafe(snapshotId)).toCompletableFuture()
                             .thenRun(() -> distributedSsIdEndTime = System.nanoTime());
             // Put current state in IMap as starting point
+            snapshotIMapStartTime = System.nanoTime();
             snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
                     entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
                     entry -> entry.getValue().item()))).toCompletableFuture()

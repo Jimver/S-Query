@@ -685,7 +685,7 @@ public class ExecutionPlan implements IdentifiedDataSerializable {
     }
 
     // for test
-    List<VertexDef> getVertices() {
+    public List<VertexDef> getVertices() {
         return vertices;
     }
 }
