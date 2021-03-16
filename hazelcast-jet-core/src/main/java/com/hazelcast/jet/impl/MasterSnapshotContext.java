@@ -16,19 +16,20 @@
 
 package com.hazelcast.jet.impl;
 
+import com.hazelcast.cp.IAtomicLong;
 import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.cluster.MemberInfo;
 import com.hazelcast.jet.JetException;
 import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.datamodel.Tuple3;
 import com.hazelcast.jet.impl.JobExecutionRecord.SnapshotStats;
-import com.hazelcast.jet.impl.execution.ExecutionContext;
 import com.hazelcast.jet.impl.execution.SnapshotFlags;
 import com.hazelcast.jet.impl.execution.init.ExecutionPlan;
 import com.hazelcast.jet.impl.operation.SnapshotPhase2Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation.SnapshotPhase1Result;
 import com.hazelcast.jet.impl.processor.EvictSnapshotProcessor;
+import com.hazelcast.jet.impl.processor.IMapStateHelper;
 import com.hazelcast.jet.impl.processor.SnapshotIMapKey;
 import com.hazelcast.jet.impl.processor.TransformStatefulP;
 import com.hazelcast.jet.impl.util.LoggingUtil;
@@ -58,6 +59,7 @@ import static com.hazelcast.jet.datamodel.Tuple3.tuple3;
 import static com.hazelcast.jet.impl.JobRepository.EXPORTED_SNAPSHOTS_PREFIX;
 import static com.hazelcast.jet.impl.JobRepository.exportedSnapshotMapName;
 import static com.hazelcast.jet.impl.JobRepository.snapshotDataMapName;
+import static com.hazelcast.jet.impl.processor.IMapStateHelper.ENABLE_IMAP_STATE;
 import static com.hazelcast.jet.impl.util.LoggingUtil.logFine;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
@@ -87,16 +89,16 @@ class MasterSnapshotContext {
     /**
      * The queue with snapshots to run. An item is added to it regularly (to do
      * a regular snapshot) or when a snapshot export is requested by the user.
-     *
+     * <p>
      * The tuple contains:<ul>
-     *     <li>{@code snapshotMapName}: user-specified name of the snapshot or
-     *         null, if no name is specified
-     *     <li>{@code isTerminal}: if true, execution will be terminated after the
-     *         snapshot
-     *     <li>{@code future}: future, that will be completed when the snapshot
-     *         is validated.
+     * <li>{@code snapshotMapName}: user-specified name of the snapshot or
+     * null, if no name is specified
+     * <li>{@code isTerminal}: if true, execution will be terminated after the
+     * snapshot
+     * <li>{@code future}: future, that will be completed when the snapshot
+     * is validated.
      * </ul>
-     *
+     * <p>
      * Queue is accessed only in synchronized code.
      */
     private final Queue<Tuple3<String, Boolean, CompletableFuture<Void>>> snapshotQueue = new LinkedList<>();
@@ -105,6 +107,18 @@ class MasterSnapshotContext {
     private ICountDownLatch ssCountDownLatch;
     private boolean countDownLatchInitialized;
     private final List<IMap<SnapshotIMapKey<Object>, Object>> snapshotIMaps = new ArrayList<>();
+    private IAtomicLong snapshotId;
+
+    // Timer variables
+    private long beforePhase1;
+    private long beforePhase2;
+    private long afterPhase2;
+
+    // Benchmark times (in nanoseconds)
+    private List<Long> imapStateSnapshotTimes;
+    private List<Long> phase1SnapshotTimes;
+    private List<Long> phase2SnapshotTimes;
+    private boolean benchmarkListsInitialized;
 
     MasterSnapshotContext(MasterContext masterContext, ILogger logger) {
         mc = masterContext;
@@ -112,36 +126,57 @@ class MasterSnapshotContext {
     }
 
     /**
+     * Helper method initializing benchmark times. Will only initialize once.
+     */
+    private void initBenchmarkListsIfNotInitialized() {
+        if (benchmarkListsInitialized) {
+            return;
+        }
+        if (ENABLE_IMAP_STATE) {
+            String iMapTimesListName = IMapStateHelper.getBenchmarkIMapTimesListName(mc.jobName());
+            imapStateSnapshotTimes = mc.getJetService().getJetInstance().getHazelcastInstance().getList(iMapTimesListName);
+        }
+        String phase1ListName = IMapStateHelper.getBenchmarkPhase1TimesListName(mc.jobName());
+        String phase2ListName = IMapStateHelper.getBenchmarkPhase2TimesListName(mc.jobName());
+        phase1SnapshotTimes = mc.getJetService().getJetInstance().getHazelcastInstance().getList(phase1ListName);
+        phase2SnapshotTimes = mc.getJetService().getJetInstance().getHazelcastInstance().getList(phase2ListName);
+        benchmarkListsInitialized = true;
+    }
+
+    /**
      * Helper method that initializes the countdown latch and snapshot IMap if it was not initialized already.
      */
     private void initDistObjectsIfNotInitialized() {
-        if (!countDownLatchInitialized) {
-            String clusterCdlName = ExecutionContext.clusterCountdownLatchHelper(mc.jobName());
-            logger.info("Initializing cluster countdown latch: " + clusterCdlName);
-            ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
-                    .getCountDownLatch(clusterCdlName);
-            Set<String> vertexNames = new HashSet<>();
-            mc.executionPlanMap().forEach(((memberInfo, executionPlan) -> {
-                executionPlan.getVertices().forEach(vertexDef -> {
-                    Processor p = new ArrayList<>(vertexDef.processorSupplier().get(1)).get(0);
-                    if (p instanceof TransformStatefulP) {
-                        String vertexName = vertexDef.name();
-                        vertexNames.add(vertexName);
-                    }
-                });
-            }));
-            // Get snapshot IMap names, then get the IMap objects and add them to the IMap list
-            List<String> snapshotMapNames = vertexNames.stream().map(TransformStatefulP::getSnapshotMapName)
-                    .collect(Collectors.toList());
-            snapshotMapNames.forEach(mapName ->
-                    logger.info("Snapshot IMap name to evict from in master context: " + mapName));
-            snapshotMapNames.forEach(mapName -> snapshotIMaps.add(
-                    mc.getJetService().getJetInstance().getHazelcastInstance().getMap(mapName)));
-            countDownLatchInitialized = true;
+        if (countDownLatchInitialized) {
+            return;
         }
+        String clusterCdlName = IMapStateHelper.clusterCountdownLatchHelper(mc.jobName());
+        logger.info("Initializing cluster countdown latch: " + clusterCdlName);
+        ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                .getCountDownLatch(clusterCdlName);
+        Set<String> vertexNames = new HashSet<>();
+        mc.executionPlanMap().forEach(((memberInfo, executionPlan) -> executionPlan.getVertices().forEach(vertexDef -> {
+            Processor p = new ArrayList<>(vertexDef.processorSupplier().get(1)).get(0);
+            if (p instanceof TransformStatefulP) {
+                String vertexName = vertexDef.name();
+                vertexNames.add(vertexName);
+            }
+        })));
+        // Get snapshot IMap names, then get the IMap objects and add them to the IMap list
+        List<String> snapshotMapNames = vertexNames.stream().map(IMapStateHelper::getSnapshotMapName)
+                .collect(Collectors.toList());
+        snapshotMapNames.forEach(mapName ->
+                logger.info("Snapshot IMap name to evict from in master context: " + mapName));
+        snapshotMapNames.forEach(mapName -> snapshotIMaps.add(
+                mc.getJetService().getJetInstance().getHazelcastInstance().getMap(mapName)));
+        String snapshotIdName = IMapStateHelper.getSnapshotIdName(mc.jobName());
+        snapshotId = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                .getAtomicLong(snapshotIdName);
+        countDownLatchInitialized = true;
     }
 
-    @SuppressWarnings("SameParameterValue") // used by jet-enterprise
+    @SuppressWarnings("SameParameterValue")
+        // used by jet-enterprise
     void enqueueSnapshot(String snapshotMapName, boolean isTerminal, CompletableFuture<Void> future) {
         snapshotQueue.add(tuple3(snapshotMapName, isTerminal, future));
     }
@@ -165,6 +200,54 @@ class MasterSnapshotContext {
             mc.unlock();
         }
         tryBeginSnapshot();
+    }
+
+    void prepareIMapStateObjects(long newSnapshotId) {
+        // IMap state related stuff in conditional
+        if (!ENABLE_IMAP_STATE) {
+            return;
+        }
+        // Countdown latch across members
+        initDistObjectsIfNotInitialized();
+        logger.info(String.format("Total number of members for this job: %s, %d. Setting cluster latch. SSId: %d",
+                mc.jobName(), mc.executionPlanMap().size(), newSnapshotId));
+        boolean succeeded = ssCountDownLatch.trySetCount(mc.executionPlanMap().size());
+        if (!succeeded) {
+            logger.severe(String.format(
+                    "Countdown latch not fully counted down for job: %s, snapshot id: %d",
+                    mc.jobName(),
+                    newSnapshotId));
+        }
+        // Set snapshot id synchronously
+        long snapshotIdStart = System.nanoTime();
+        snapshotId.set(newSnapshotId);
+        long snapshotIdEnd = System.nanoTime();
+        logger.info(String.format("Set snapshot id atomic long to %d took: %d",
+                newSnapshotId, (snapshotIdEnd - snapshotIdStart)));
+        // Wait for cluster cdl to complete async
+        CompletableFuture.runAsync(() -> {
+            try {
+                long clusterCdlStart = System.nanoTime();
+                boolean result = ssCountDownLatch.await(CLUSTER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                if (!result) {
+                    logger.severe("Cluster snapshot countdown latch was not fully counted down in time! " +
+                            "Still continuing with other snapshot process for job: " + mc.jobName());
+                    return;
+                }
+                long clusterCdlEnd = System.nanoTime();
+                logger.info("Cluster level cdl took: " + (clusterCdlEnd - clusterCdlStart));
+                imapStateSnapshotTimes.add(clusterCdlEnd - clusterCdlStart);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+                Thread.currentThread().interrupt();
+            }
+        });
+        // Evict older snapshot entries in each snapshot IMap
+        long executeStart = System.nanoTime();
+        snapshotIMaps.parallelStream().forEach(
+                imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
+        long executeEnd = System.nanoTime();
+        logger.info("Execute evictor took: " + (executeEnd - executeStart));
     }
 
     void tryBeginSnapshot() {
@@ -209,49 +292,19 @@ class MasterSnapshotContext {
             int snapshotFlags = SnapshotFlags.create(isTerminal, isExport);
             String finalMapName = isExport ? exportedSnapshotMapName(snapshotMapName)
                     : snapshotDataMapName(mc.jobId(), mc.jobExecutionRecord().ongoingDataMapIndex());
-                mc.nodeEngine().getHazelcastInstance().getMap(finalMapName).clear();
+            mc.nodeEngine().getHazelcastInstance().getMap(finalMapName).clear();
             logFine(logger, "Starting snapshot %d for %s, flags: %s, writing to: %s",
                     newSnapshotId, mc.jobIdString(), SnapshotFlags.toString(snapshotFlags), snapshotMapName);
 
-            // Countdown latch across members
-            initDistObjectsIfNotInitialized();
-            logger.info(String.format("Total number of members for this job: %s, %d. Setting cluster latch. SSId: %d",
-                    mc.jobName(), mc.executionPlanMap().size(), newSnapshotId));
-            boolean succeeded = ssCountDownLatch.trySetCount(mc.executionPlanMap().size());
-            if (!succeeded) {
-                logger.severe(String.format(
-                        "Countdown latch not fully counted down for job: %s, snapshot id: %d",
-                        mc.jobName(),
-                        newSnapshotId));
-            }
-            // Wait for cluster cdl to complete async
-            CompletableFuture.runAsync(() -> {
-                try {
-                    long clusterCdlStart = System.nanoTime();
-                    boolean result = ssCountDownLatch.await(CLUSTER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                    if (!result) {
-                        logger.severe("Cluster snapshot countdown latch was not fully counted down in time! " +
-                                "Still continuing with other snapshot process for job: " + mc.jobName());
-                        return;
-                    }
-                    long clusterCdlEnd = System.nanoTime();
-                    logger.info("Cluster level cdl took: " + (clusterCdlEnd - clusterCdlStart));
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                    Thread.currentThread().interrupt();
-                }
-            });
+            // Init benchmark lists always
+            initBenchmarkListsIfNotInitialized();
 
-            // Evict older snapshot entries in each snapshot IMap
-            long executeStart = System.nanoTime();
-            snapshotIMaps.parallelStream().forEach(
-                    imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
-            long executeEnd = System.nanoTime();
-            logger.info("Execute evictor took: " + (executeEnd - executeStart));
+            prepareIMapStateObjects(newSnapshotId);
 
             Function<ExecutionPlan, Operation> factory = plan ->
                     new SnapshotPhase1Operation(mc.jobId(), localExecutionId, newSnapshotId, finalMapName, snapshotFlags);
 
+            beforePhase1 = System.nanoTime();
             // Need to take a copy of executionId: we don't cancel the scheduled task when the execution
             // finalizes. If a new execution is started in the meantime, we'll use the execution ID to detect it.
             mc.invokeOnParticipants(
@@ -263,10 +316,10 @@ class MasterSnapshotContext {
     }
 
     /**
-     * @param responses collected responses from the members
+     * @param responses       collected responses from the members
      * @param snapshotMapName the IMap name to which the snapshot is written
-     * @param snapshotFlags flags of the snapshot
-     * @param future a future to be completed when the phase-2 is fully completed
+     * @param snapshotFlags   flags of the snapshot
+     * @param future          a future to be completed when the phase-2 is fully completed
      */
     private void onSnapshotPhase1Complete(
             Collection<Map.Entry<MemberInfo, Object>> responses,
@@ -358,6 +411,8 @@ class MasterSnapshotContext {
             // start the phase 2
             Function<ExecutionPlan, Operation> factory = plan -> new SnapshotPhase2Operation(
                     mc.jobId(), executionId, snapshotId, isSuccess && !SnapshotFlags.isExportOnly(snapshotFlags));
+
+            beforePhase2 = System.nanoTime();
             mc.invokeOnParticipants(factory,
                     responses2 -> onSnapshotPhase2Complete(mergedResult.getError(), responses2, executionId, snapshotId,
                             snapshotFlags, future, stats.startTime()),
@@ -366,11 +421,11 @@ class MasterSnapshotContext {
     }
 
     /**
-     * @param phase1Error error from the phase-1. Null if phase-1 was successful.
-     * @param responses collected responses from the members
+     * @param phase1Error   error from the phase-1. Null if phase-1 was successful.
+     * @param responses     collected responses from the members
      * @param snapshotFlags flags of the snapshot
-     * @param future future to be completed when the phase-2 is fully completed
-     * @param startTime phase-1 start time
+     * @param future        future to be completed when the phase-2 is fully completed
+     * @param startTime     phase-1 start time
      */
     private void onSnapshotPhase2Complete(
             String phase1Error,
@@ -431,11 +486,17 @@ class MasterSnapshotContext {
             } finally {
                 mc.unlock();
             }
+            afterPhase2 = System.nanoTime();
+
             if (logger.isFineEnabled()) {
                 logger.fine("Snapshot " + snapshotId + " for " + mc.jobIdString() + " completed in "
                         + (System.currentTimeMillis() - startTime) + "ms, status="
                         + (phase1Error == null ? "success" : "failure: " + phase1Error));
             }
+
+            // Add times to benchmark lists
+            phase1SnapshotTimes.add(beforePhase2 - beforePhase1);
+            phase2SnapshotTimes.add(afterPhase2 - beforePhase2);
 
             tryBeginSnapshot();
         });

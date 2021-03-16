@@ -37,6 +37,7 @@ import com.hazelcast.jet.impl.exception.TerminatedWithSnapshotException;
 import com.hazelcast.jet.impl.execution.init.ExecutionPlan;
 import com.hazelcast.jet.impl.metrics.RawJobMetrics;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation.SnapshotPhase1Result;
+import com.hazelcast.jet.impl.processor.IMapStateHelper;
 import com.hazelcast.jet.impl.util.LoggingUtil;
 import com.hazelcast.jet.impl.util.Util;
 import com.hazelcast.logging.ILogger;
@@ -47,7 +48,6 @@ import java.io.File;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -150,12 +150,13 @@ public class ExecutionContext implements DynamicMetricsProvider {
         senderMap = unmodifiableMap(plan.getSenderMap());
         tasklets = plan.getTasklets();
 
+
         // Initialize member and cluster snapshot countdown latch
         String memberCdlName = memberCountdownLatch();
         logger.info("Initializing member countdown latch name: " + memberCdlName);
         memberSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
                 .getCountDownLatch(memberCdlName);
-        String clusterCdlName = clusterCountdownLatchHelper(jobName);
+        String clusterCdlName = IMapStateHelper.clusterCountdownLatchHelper(jobName);
         logger.info("Getting cluster countdown latch name: " + clusterCdlName);
         clusterSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
                 .getCountDownLatch(clusterCdlName);
@@ -163,16 +164,8 @@ public class ExecutionContext implements DynamicMetricsProvider {
         return this;
     }
 
-    public static String memberCountdownLatchHelper(UUID memberName, String jobName) {
-        return String.format("cdl-%s-%s", memberName.toString(), jobName);
-    }
-
     public String memberCountdownLatch() {
-        return memberCountdownLatchHelper(nodeEngine.getLocalMember().getUuid(), jobName);
-    }
-
-    public static String clusterCountdownLatchHelper(String jobName) {
-        return "cdl-" + jobName;
+        return IMapStateHelper.memberCountdownLatchHelper(nodeEngine.getLocalMember().getUuid(), jobName);
     }
 
     /**

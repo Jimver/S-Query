@@ -21,7 +21,6 @@ import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
-import com.hazelcast.cp.IAtomicLong;
 import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.metrics.Probe;
 import com.hazelcast.internal.util.counters.Counter;
@@ -34,13 +33,11 @@ import com.hazelcast.jet.core.ResettableSingletonTraverser;
 import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.datamodel.TimestampedItem;
 import com.hazelcast.jet.function.TriFunction;
-import com.hazelcast.jet.impl.execution.ExecutionContext;
 import com.hazelcast.jet.impl.util.Util;
 import com.hazelcast.map.IMap;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.text.MessageFormat;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -59,18 +56,12 @@ import java.util.stream.Collectors;
 
 import static com.hazelcast.jet.Util.entry;
 import static com.hazelcast.jet.core.BroadcastKey.broadcastKey;
+import static com.hazelcast.jet.impl.processor.IMapStateHelper.ENABLE_IMAP_STATE;
 import static com.hazelcast.jet.impl.util.Util.logLateEvent;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
 public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
-    // Name of IMap containing all live state Imap names, where key = vertex name and value = imap name
-    public static final String VERTEX_TO_LIVE_STATE_IMAP_NAME = "statemapnames";
-    // Name of IMap containing all snapshot state Imap names, where key = vertex name and value = imap name
-    public static final String VERTEX_TO_SS_STATE_IMAP_NAME = "snapshotmapnames";
-    // Name of IMap containing all snapshot ID AtomicLong names, where key = vertex name and value = AtomicLong name
-    public static final String VERTEX_TO_SS_ID_IMAP_NAME = "snapshotidnames";
-
     // True to verify local and in memory key set are equal
     private static final boolean VERIFY_KEYSET = false;
     private static final int HASH_MAP_INITIAL_CAPACITY = 16;
@@ -101,26 +92,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private Traverser<? extends Entry<?, ?>> snapshotTraverser;
     private boolean inComplete;
 
-    // Store vertex and job name
-    private String vertexName;
-    private String jobName;
-
     // Timer variables
     private long snapshotIMapStartTime;
     private long snapshotIMapEndTime;
     private long snapshotTraverserStartTime;
     private long snapshotTraverserEndTime;
-    private long distributedSsIdStartTime;
-    private long distributedSsIdEndTime;
     private long countDownStartTime;
     private long countDownEndTime;
 
     // Snapshot variables
     private long snapshotId; // Snapshot ID
-    private IAtomicLong distributedSnapshotId; // Snapshot Id counter distributed
     private ICountDownLatch ssCountDownLatch; // Snapshot countdown latch
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
-    private CompletableFuture<Void> distributedSnapshotIdFuture; // Distributed atomic long future
     private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
     private final boolean waitForFutures; // Wait for futures
     private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
@@ -215,18 +198,16 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @param hz              Hazelcast instance
      * @param stateMapName    Live state IMap name
      * @param snapshotMapName Snapshot state IMap name
-     * @param snapshotIdName  Snapshot ID AtomicLong name
+     * @param vertexName      The vertex name of this transform
      */
     private void populateVertexLookupImaps(HazelcastInstance hz,
                                            String stateMapName,
                                            String snapshotMapName,
-                                           String snapshotIdName) {
-        Map<String, String> stateMapNames = hz.getMap(VERTEX_TO_LIVE_STATE_IMAP_NAME);
+                                           String vertexName) {
+        Map<String, String> stateMapNames = hz.getMap(IMapStateHelper.VERTEX_TO_LIVE_STATE_IMAP_NAME);
         stateMapNames.put(vertexName, stateMapName);
-        Map<String, String> snapshotMapNames = hz.getMap(VERTEX_TO_SS_STATE_IMAP_NAME);
+        Map<String, String> snapshotMapNames = hz.getMap(IMapStateHelper.VERTEX_TO_SS_STATE_IMAP_NAME);
         snapshotMapNames.put(vertexName, snapshotMapName);
-        Map<String, String> snapshotIdMapNames = hz.getMap(VERTEX_TO_SS_ID_IMAP_NAME);
-        snapshotIdMapNames.put(vertexName, snapshotIdName);
     }
 
 
@@ -250,33 +231,29 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     /**
      * Helper method for state IMap name.
      *
+     * @param vertexName The Vertex name
      * @return The IMap name consisting of node name, vertex name, and memory address of processor
      */
-    private String getLiveStateImapName() {
+    private String getLiveStateImapName(String vertexName) {
         return vertexName;
-    }
-
-    public static String getSnapshotMapName(String liveMapName) {
-        return MessageFormat.format("snapshot-{0}", liveMapName);
-    }
-
-    public static String getSnapshotIdName(String liveMapName) {
-        return MessageFormat.format("ssid-{0}", liveMapName);
     }
 
     @Override
     protected void init(@Nonnull Context context) throws Exception {
+        // Check if enabled
+        if (!ENABLE_IMAP_STATE) {
+            return;
+        }
         // Get HazelCastInstance
         Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
         HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
 
         // Get IMap, AtomicLong and CountDownLatch names
-        this.vertexName = context.vertexName();
-        this.jobName = context.jobConfig().getName();
-        String liveMapName = getLiveStateImapName();
-        String snapshotMapName = getSnapshotMapName(liveMapName);
-        String snapshotIdName = getSnapshotIdName(liveMapName);
-        String countDownLatchName = ExecutionContext.memberCountdownLatchHelper(
+        String vertexName = context.vertexName();
+        String jobName = context.jobConfig().getName();
+        String liveMapName = getLiveStateImapName(vertexName);
+        String snapshotMapName = IMapStateHelper.getSnapshotMapName(liveMapName);
+        String countDownLatchName = IMapStateHelper.memberCountdownLatchHelper(
                 context.jetInstance().getCluster().getLocalMember().getUuid(),
                 jobName
         );
@@ -290,13 +267,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         config.addMapConfig(snapshotMapConfig0);
 
         // Add map names to Distributed List
-        populateVertexLookupImaps(hz, liveMapName, snapshotMapName, snapshotIdName);
+        populateVertexLookupImaps(hz, liveMapName, snapshotMapName, vertexName);
 
         keyToStateIMap = hz.getMap(liveMapName);
         snapshotIMap = hz.getMap(snapshotMapName);
-
-        // Initialize distributed snapshot Id
-        distributedSnapshotId = hz.getCPSubsystem().getAtomicLong(snapshotIdName);
 
         // Initialize snapshot countdown latch
         ssCountDownLatch = hz.getCPSubsystem().getCountDownLatch(countDownLatchName);
@@ -383,6 +357,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
+        // Fast return
+        if (!ENABLE_IMAP_STATE) {
+            return result;
+        }
         keyToStateIMap.set(key, state); // Put to live state IMap
         processSnapshotItem(key, state, snapshotId, SnapshotQueueItem.Operation.PUT); // Put state to snapshot IMap
         return result;
@@ -430,13 +408,15 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     break;
                 }
-                // Evict from live state IMap
-                keyToStateIMap.evict(entry.getKey());
-                // Evict from snapshot IMap
-                processSnapshotItem(entry.getKey(), null, snapshotId, SnapshotQueueItem.Operation.DELETE);
+                if (ENABLE_IMAP_STATE) {
+                    // Evict from live state IMap
+                    keyToStateIMap.evict(entry.getKey());
+                    // Evict from snapshot IMap
+                    processSnapshotItem(entry.getKey(), null, snapshotId, SnapshotQueueItem.Operation.DELETE);
+                }
                 keyToStateIterator.remove();
                 if (onEvictFn != null) {
-                    getLogger().info(String.format(
+                    getLogger().fine(String.format(
                             "Evicting key '%s' with value: %s",
                             entry.getKey(),
                             entry.getValue().item()));
@@ -494,20 +474,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     }
 
     /**
-     * Helper checking snapshot id future, prints the time it took to complete the future.
-     * Also returns the result
-     *
-     * @return true if distributedSnapshotIdFuture is not null and done, false otherwise
-     */
-    private boolean checkSsIdFuture() {
-        // When snapshot future is done
-        if (distributedSnapshotIdFuture != null && distributedSnapshotIdFuture.isDone()) {
-            return true;
-        }
-        return false;
-    }
-
-    /**
      * Checks the status of the countdown latch future. Sets countDownFuture to null in case it is done.
      *
      * @return true if the future is not null and done, false otherwise
@@ -546,12 +512,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         // Entered saveToSnapshot() before previous non blocking snapshotFuture was done
         boolean traverserDone = snapshotTraverser == null;
         boolean snapshotFutureNotDone = snapshotFuture != null;
-        boolean ssIdFutureNotDone = distributedSnapshotIdFuture != null && !distributedSnapshotIdFuture.isDone();
         checkCountDownFuture(); // Check and clear countDownFuture
         boolean cdlFutureNotDone = countDownFuture != null && !countDownFuture.isDone();
         if (!waitForFutures
                 && traverserDone
-                && (snapshotFutureNotDone || ssIdFutureNotDone || cdlFutureNotDone)) {
+                && (snapshotFutureNotDone || cdlFutureNotDone)) {
             // snapshot Future was not null yet
             checkSnapshotFutureClear();
             if (snapshotFuture == null) {
@@ -563,9 +528,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 getLogger().severe("Invalid state, got to saveToSnapshot() before previous snapshotFuture could " +
                         "finish! Consider increasing snapshot interval.");
             }
-            if (ssIdFutureNotDone) {
-                getLogger().severe("ssId future not done from previous saveToSnapshot() invocation");
-            }
             if (cdlFutureNotDone) {
                 getLogger().severe("count down latch future not done from previous saveToSnapshot() invocation");
             }
@@ -576,9 +538,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * Logs the execution times of tasks in snapshot phase.
      */
     private void logSnapshotExecutionTimes() {
-//        getLogger().info("Execute on entries took: " + (distributedSsIdStartTime - snapshotIMapStartTime));
         if (waitForFutures) {
-            getLogger().info("SS id time: " + (distributedSsIdEndTime - distributedSsIdStartTime));
             getLogger().info("Snapshot IMap time: " + (snapshotIMapEndTime - snapshotIMapStartTime));
             getLogger().info("Countdown latch time: " + (countDownEndTime - countDownStartTime));
         }
@@ -592,22 +552,22 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      */
     private boolean isSnapshotDone() {
         if (emitFromTraverserToSnapshot(snapshotTraverser)) {
+            if (!ENABLE_IMAP_STATE) {
+                return true;
+            }
             boolean ssImapDone = checkSnapshotFutureReturn(false);
-            boolean distSsIdDone = checkSsIdFuture();
             boolean cdlIsDone = checkCountDownFuture();
 
             // We don't wait for IMap ss future so mark as done
             if (!waitForFutures) {
                 ssImapDone = true;
-                distSsIdDone = true;
                 cdlIsDone = true;
             }
             // Once both are done
-            if (ssImapDone && distSsIdDone && cdlIsDone) {
+            if (ssImapDone && cdlIsDone) {
                 // Reset futures when waiting for them and they are done
                 if (waitForFutures) {
                     snapshotFuture = null;
-                    distributedSnapshotIdFuture = null;
                     countDownFuture = null;
                 }
                 // Log execution times
@@ -627,35 +587,30 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return complete();
         }
 
-        // Check if previous snapshot was finished correctly
-        checkPreviousSnapshotFinished();
+        if (ENABLE_IMAP_STATE) {
+            // Check if previous snapshot was finished correctly
+            checkPreviousSnapshotFinished();
 
-        // Only execute the remove and snapshot once
-        if (snapshotFuture == null) {
-//            snapshotIMapStartTime = System.nanoTime();
-//            snapshotIMap.executeOnEntries(new EvictSnapshotProcessor<>(snapshotId)); // Evict older snapshot entries
-            snapshotId++; // Increment snapshot ID
-            // Alter distributed snapshot Id to be the most recent snapshot Id
-            distributedSsIdStartTime = System.nanoTime();
-            distributedSnapshotIdFuture =
-                    distributedSnapshotId.alterAsync(new AlterSafe(snapshotId)).toCompletableFuture()
-                            .thenRun(() -> distributedSsIdEndTime = System.nanoTime());
-            // Put current state in IMap as starting point
-            snapshotIMapStartTime = System.nanoTime();
-            snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
-                    entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
-                    entry -> entry.getValue().item()))).toCompletableFuture()
-                    .thenRun(() -> snapshotIMapEndTime = System.nanoTime());
-            if (snapshotDelayMillis != 0L) {
-                snapshotFuture = snapshotFuture.thenRun(() -> {
-                    try {
-                        Thread.sleep(snapshotDelayMillis);
-                        snapshotIMapEndTime = System.nanoTime();
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                        Thread.currentThread().interrupt();
-                    }
-                });
+            // Only execute the remove and snapshot once
+            if (snapshotFuture == null) {
+                snapshotId++; // Increment snapshot ID
+                // Put current state in IMap as starting point
+                snapshotIMapStartTime = System.nanoTime();
+                snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
+                        entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
+                        entry -> entry.getValue().item()))).toCompletableFuture()
+                        .thenRun(() -> snapshotIMapEndTime = System.nanoTime());
+                if (snapshotDelayMillis != 0L) {
+                    snapshotFuture = snapshotFuture.thenRun(() -> {
+                        try {
+                            Thread.sleep(snapshotDelayMillis);
+                            snapshotIMapEndTime = System.nanoTime();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                }
             }
         }
 
