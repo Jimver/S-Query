@@ -281,38 +281,40 @@ public class ExecutionContext implements DynamicMetricsProvider {
                 return CompletableFuture.completedFuture(new SnapshotPhase1Result(0, 0, 0, null));
             }
 
-            // Get amount of transformstateful processor tasklets.
-            int transformStatefulP = (int) this.tasklets.stream()
-                    .filter(t -> {
-                        if (t instanceof ProcessorTasklet) {
-                            ProcessorTasklet tasklet = (ProcessorTasklet) t;
-                            return tasklet.isTransformStatefulP();
+            if (IMapStateHelper.ENABLE_IMAP_STATE) {
+                // Get amount of transformstateful processor tasklets.
+                int transformStatefulP = (int) this.tasklets.stream()
+                        .filter(t -> {
+                            if (t instanceof ProcessorTasklet) {
+                                ProcessorTasklet tasklet = (ProcessorTasklet) t;
+                                return tasklet.isTransformStatefulP();
+                            }
+                            return false;
+                        })
+                        .count();
+                logger.info("Trying to set member countdown latch to: " + transformStatefulP);
+                memberSsCountDownLatch.trySetCount(transformStatefulP);
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        long memberCdlStart = System.nanoTime();
+                        boolean result = memberSsCountDownLatch.await(MEMBER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                        if (!result) {
+                            logger.severe("Member snapshot countdown latch was not fully counted down in time! " +
+                                    "Still continuing with other snapshot process for job: " + jobName);
+                            return;
                         }
-                        return false;
-                    })
-                    .count();
-            logger.info("Trying to set member countdown latch to: " + transformStatefulP);
-            memberSsCountDownLatch.trySetCount(transformStatefulP);
-            CompletableFuture.runAsync(() -> {
-                try {
-                    long memberCdlStart = System.nanoTime();
-                    boolean result = memberSsCountDownLatch.await(MEMBER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                    if (!result) {
-                        logger.severe("Member snapshot countdown latch was not fully counted down in time! " +
-                                "Still continuing with other snapshot process for job: " + jobName);
-                        return;
+                        long memberCdlEnd = System.nanoTime();
+                        // Count down cluster level latch for this job
+                        clusterSsCountDownLatch.countDown();
+                        long clusterCdEnd = System.nanoTime();
+                        logger.info("Member level cdl took: " + (memberCdlEnd - memberCdlStart));
+                        logger.info("Cluster countdown took: " + (clusterCdEnd - memberCdlEnd));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                        Thread.currentThread().interrupt();
                     }
-                    long memberCdlEnd = System.nanoTime();
-                    // Count down cluster level latch for this job
-                    clusterSsCountDownLatch.countDown();
-                    long clusterCdEnd = System.nanoTime();
-                    logger.info("Member level cdl took: " + (memberCdlEnd - memberCdlStart));
-                    logger.info("Cluster countdown took: " + (clusterCdEnd - memberCdlEnd));
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                    Thread.currentThread().interrupt();
-                }
-            });
+                });
+            }
             return snapshotContext.startNewSnapshotPhase1(snapshotId, mapName, flags);
         }
     }
