@@ -111,6 +111,71 @@ public interface StreamStageWithKey<T, K> extends GeneralStageWithKey<T, K> {
      *
      * @param <S>        type of the state object
      * @param <R>        type of the result
+     * @param liveStateIMapEnabled Whether to use the live state IMap
+     * @param waitForFutures Whether to wait for futures
+     */
+    @Nonnull
+    <S, R> StreamStage<R> mapStateful(
+            long ttl,
+            @Nonnull SupplierEx<? extends S> createFn,
+            @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> mapFn,
+            @Nonnull TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
+    );
+
+    /**
+     * Attaches a stage that performs a stateful mapping operation. {@code
+     * createFn} returns the object that holds the state. Jet passes this
+     * object along with each input item to {@code mapFn}, which can update
+     * the object's state. For each grouping key there's a separate state
+     * object. The state object will be included in the state snapshot, so it
+     * survives job restarts. For this reason it must be serializable.
+     * <p>
+     * If the given {@code ttl} is greater than zero, Jet will consider the
+     * state object stale if its time-to-live has expired. The state object for
+     * a given key has a timestamp attached to it: the top timestamp of any
+     * event with that key seen so far. Whenever the watermark advances, Jet
+     * discards all state objects with a timestamp less than {@code wm - ttl}.
+     * Just before discarding the state object, Jet calls {@code onEvictFn} on
+     * it. The function can return an output item that will be emitted, or
+     * {@code null} if it doesn't need to emit an item. If TTL is used, Jet
+     * also drops late events; otherwise, all events are processed.
+     * <p>
+     * This sample takes a stream of pairs {@code (serverId, latency)}
+     * representing the latencies of serving individual requests and keeps
+     * track, separately for each server, of the total latency accumulated over
+     * individual sessions &mdash; bursts of server activity separated
+     * by quiet periods of one minute or more. For each input item it outputs
+     * the accumulated latency so far and when a session ends, it outputs a
+     * special entry that reports the total latency for that session.
+     * <pre>{@code
+     * StreamStage<Entry<String, Long>> latencies = null;
+     * StreamStage<Entry<String, Long>> cumulativeLatencies = latencies
+     *         .groupingKey(Entry::getKey)
+     *         .mapStateful(
+     *                 MINUTES.toMillis(1),
+     *                 LongAccumulator::new,
+     *                 (sum, key, entry) -> {
+     *                     sum.add(entry.getValue());
+     *                     return entry(key, sum.get());
+     *                 },
+     *                 (sum, key, time) -> entry(String.format(
+     *                         "%s:totalForSession:%d", key, time), sum.get())
+     *         );
+     * }</pre>
+     * <p>
+     * The given functions must be stateless and {@linkplain
+     * Processor#isCooperative() cooperative}.
+     *
+     * @param ttl        time-to-live for each state object, disabled if zero or less
+     * @param createFn   function that returns the state object
+     * @param mapFn      function that receives the state object and the input item and
+     *                   outputs the result item. It may modify the state object.
+     * @param onEvictFn  function that Jet calls when evicting a state object
+     *
+     * @param <S>        type of the state object
+     * @param <R>        type of the result
      */
     @Nonnull
     <S, R> StreamStage<R> mapStateful(

@@ -228,7 +228,8 @@ class MasterSnapshotContext {
         CompletableFuture.runAsync(() -> {
             try {
                 long clusterCdlStart = System.nanoTime();
-                boolean result = ssCountDownLatch.await(CLUSTER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                boolean result =
+                        ssCountDownLatch.await(mc.jobConfig().getSnapshotIntervalMillis(), TimeUnit.MILLISECONDS);
                 if (!result) {
                     logger.severe("Cluster snapshot countdown latch was not fully counted down in time! " +
                             "Still continuing with other snapshot process for job: " + mc.jobName());

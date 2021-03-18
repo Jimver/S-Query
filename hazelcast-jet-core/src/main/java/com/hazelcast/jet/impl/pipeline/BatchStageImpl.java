@@ -115,9 +115,19 @@ public class BatchStageImpl<T> extends ComputeStageImplBase<T> implements BatchS
     @Nonnull @Override
     public <S, R> BatchStage<R> mapStateful(
             @Nonnull SupplierEx<? extends S> createFn,
+            @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
+    ) {
+        return attachGlobalMapStateful(createFn, mapFn, liveStateIMapEnabled, waitForFutures);
+    }
+
+    @Nonnull @Override
+    public <S, R> BatchStage<R> mapStateful(
+            @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn
     ) {
-        return attachGlobalMapStateful(createFn, mapFn);
+        return attachGlobalMapStateful(createFn, mapFn, true, false);
     }
 
     @Nonnull @Override
@@ -125,7 +135,7 @@ public class BatchStageImpl<T> extends ComputeStageImplBase<T> implements BatchS
             @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull BiPredicateEx<? super S, ? super T> filterFn
     ) {
-        return attachGlobalMapStateful(createFn, (s, t) -> filterFn.test(s, t) ? t : null);
+        return attachGlobalMapStateful(createFn, (s, t) -> filterFn.test(s, t) ? t : null, true, false);
     }
 
     @Nonnull @Override

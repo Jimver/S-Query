@@ -32,6 +32,8 @@ abstract class StatefulKeyedTransformBase<T, K, S> extends AbstractTransform {
     final FunctionEx<? super T, ? extends K> keyFn;
     final ToLongFunctionEx<? super T> timestampFn;
     final Supplier<? extends S> createFn;
+    final boolean liveStateIMapEnabled;
+    final boolean waitForFutures;
 
     StatefulKeyedTransformBase(
             @Nonnull String name,
@@ -39,13 +41,17 @@ abstract class StatefulKeyedTransformBase<T, K, S> extends AbstractTransform {
             long ttl,
             @Nonnull FunctionEx<? super T, ? extends K> keyFn,
             @Nonnull ToLongFunctionEx<? super T> timestampFn,
-            @Nonnull Supplier<? extends S> createFn
+            @Nonnull Supplier<? extends S> createFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
     ) {
         super(name, upstream);
         this.ttl = ttl;
         this.keyFn = keyFn;
         this.timestampFn = timestampFn;
         this.createFn = createFn;
+        this.liveStateIMapEnabled = liveStateIMapEnabled;
+        this.waitForFutures = waitForFutures;
     }
 
     @Override

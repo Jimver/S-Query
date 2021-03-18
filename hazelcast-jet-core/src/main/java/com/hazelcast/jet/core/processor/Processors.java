@@ -771,7 +771,9 @@ public final class Processors {
             @Nonnull ToLongFunctionEx<? super T> timestampFn,
             @Nonnull Supplier<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> statefulMapFn,
-            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn
+            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
     ) {
         return () -> {
             final ResettableSingletonTraverser<R> mainTrav = new ResettableSingletonTraverser<>();
@@ -791,7 +793,10 @@ public final class Processors {
                     onEvictFnCopy != null ? (s, k, wm) -> {
                         evictTrav.accept(onEvictFnCopy.apply(s, k, wm));
                         return evictTrav;
-                    } : null
+                    } : null,
+                    liveStateIMapEnabled,
+                    waitForFutures,
+                    0
             );
         };
     }

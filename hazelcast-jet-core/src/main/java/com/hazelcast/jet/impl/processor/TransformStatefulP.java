@@ -80,8 +80,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
     private final Map<K, TimestampedItem<S>> keyToState =
             new LinkedHashMap<>(HASH_MAP_INITIAL_CAPACITY, HASH_MAP_LOAD_FACTOR, true);
-    private IMap<K, S> keyToStateIMap;
-    private IMap<SnapshotIMapKey<K>, S> snapshotIMap;
+    private IMap<K, S> keyToStateIMap; // Live state IMap
+    private IMap<SnapshotIMapKey<K>, S> snapshotIMap; // Snapshot state IMap
     private final FlatMapper<T, R> flatMapper = flatMapper(this::flatMapEvent);
 
     private final FlatMapper<Watermark, Object> wmFlatMapper = flatMapper(this::flatMapWm);
@@ -91,6 +91,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private long currentWm = Long.MIN_VALUE;
     private Traverser<? extends Entry<?, ?>> snapshotTraverser;
     private boolean inComplete;
+
+    private final boolean liveStateIMapEnabled; // Whether to also have a live state IMap
 
     // Timer variables
     private long snapshotIMapStartTime;
@@ -137,6 +139,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn
     ) {
         this(ttl, keyFn, timestampFn, createFn, statefulFlatMapFn, onEvictFn,
+                true,
                 false,
                 0L);
     }
@@ -148,7 +151,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nonnull Supplier<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn,
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn,
-            boolean waitForFutures,
+            boolean liveStateIMapEnabled, boolean waitForFutures,
             long snapshotDelayMillis
     ) {
         this.ttl = ttl > 0 ? ttl : Long.MAX_VALUE;
@@ -157,6 +160,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
+        this.liveStateIMapEnabled = liveStateIMapEnabled;
         this.waitForFutures = waitForFutures;
         this.snapshotDelayMillis = snapshotDelayMillis;
     }
@@ -361,7 +365,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         if (!ENABLE_IMAP_STATE) {
             return result;
         }
-        keyToStateIMap.set(key, state); // Put to live state IMap
+        if (liveStateIMapEnabled) {
+            keyToStateIMap.set(key, state); // Put to live state IMap
+        }
         processSnapshotItem(key, state, snapshotId, SnapshotQueueItem.Operation.PUT); // Put state to snapshot IMap
         return result;
     }
@@ -409,8 +415,10 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     break;
                 }
                 if (ENABLE_IMAP_STATE) {
-                    // Evict from live state IMap
-                    keyToStateIMap.evict(entry.getKey());
+                    if (liveStateIMapEnabled) {
+                        // Evict from live state IMap
+                        keyToStateIMap.evict(entry.getKey());
+                    }
                     // Evict from snapshot IMap
                     processSnapshotItem(entry.getKey(), null, snapshotId, SnapshotQueueItem.Operation.DELETE);
                 }

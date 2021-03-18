@@ -115,6 +115,14 @@ public interface BatchStage<T> extends GeneralStage<T> {
     @Nonnull @Override
     <S, R> BatchStage<R> mapStateful(
             @Nonnull SupplierEx<? extends S> createFn,
+            @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
+    );
+
+    @Nonnull @Override
+    <S, R> BatchStage<R> mapStateful(
+            @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn
     );
 

@@ -43,9 +43,11 @@ public class MapStatefulTransform<T, K, S, R> extends StatefulKeyedTransformBase
             @Nonnull ToLongFunctionEx<? super T> timestampFn,
             @Nonnull Supplier<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> statefulMapFn,
-            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn
+            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
     ) {
-        super("map-stateful-keyed", upstream, ttl, keyFn, timestampFn, createFn);
+        super("map-stateful-keyed", upstream, ttl, keyFn, timestampFn, createFn, liveStateIMapEnabled, waitForFutures);
         this.statefulMapFn = statefulMapFn;
         this.onEvictFn = onEvictFn;
     }
@@ -54,7 +56,8 @@ public class MapStatefulTransform<T, K, S, R> extends StatefulKeyedTransformBase
     public void addToDag(Planner p, Context context) {
         determineLocalParallelism(LOCAL_PARALLELISM_USE_DEFAULT, context, false);
         PlannerVertex pv = p.addVertex(this, name(), determinedLocalParallelism(),
-                mapStatefulP(ttl, keyFn, timestampFn, createFn, statefulMapFn, onEvictFn));
+                mapStatefulP(ttl, keyFn, timestampFn, createFn, statefulMapFn,
+                        onEvictFn, liveStateIMapEnabled, waitForFutures));
         p.addEdges(this, pv.v, edge -> edge.partitioned(keyFn).distributed());
     }
 }

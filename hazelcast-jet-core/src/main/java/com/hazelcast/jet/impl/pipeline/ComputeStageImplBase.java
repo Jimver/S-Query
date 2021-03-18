@@ -169,7 +169,9 @@ public abstract class ComputeStageImplBase<T> extends AbstractStage {
     @SuppressWarnings({"unchecked", "rawtypes"})
     <S, R, RET> RET attachGlobalMapStateful(
             @Nonnull SupplierEx<? extends S> createFn,
-            @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn
+            @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
     ) {
         checkSerializable(createFn, "createFn");
         checkSerializable(mapFn, "mapFn");
@@ -177,8 +179,9 @@ public abstract class ComputeStageImplBase<T> extends AbstractStage {
                 transform,
                 fnAdapter.adaptTimestampFn(),
                 createFn,
-                fnAdapter.<S, Object, T, R>adaptStatefulMapFn((s, k, t) -> mapFn.apply(s, t))
-        );
+                fnAdapter.<S, Object, T, R>adaptStatefulMapFn((s, k, t) -> mapFn.apply(s, t)),
+                liveStateIMapEnabled,
+                waitForFutures);
         return attach(mapStatefulTransform, fnAdapter);
     }
 
@@ -206,7 +209,9 @@ public abstract class ComputeStageImplBase<T> extends AbstractStage {
             @Nonnull FunctionEx<? super T, ? extends K> keyFn,
             @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> mapFn,
-            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn
+            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn,
+            boolean liveStateIMapEnabled,
+            boolean waitForFutures
     ) {
         checkSerializable(keyFn, "keyFn");
         checkSerializable(createFn, "createFn");
@@ -221,7 +226,10 @@ public abstract class ComputeStageImplBase<T> extends AbstractStage {
                 fnAdapter.adaptTimestampFn(),
                 createFn,
                 fnAdapter.adaptStatefulMapFn(mapFn),
-                onEvictFn != null ? fnAdapter.adaptOnEvictFn(onEvictFn) : null);
+                onEvictFn != null ? fnAdapter.adaptOnEvictFn(onEvictFn) : null,
+                liveStateIMapEnabled,
+                waitForFutures
+        );
         return attach(mapStatefulTransform, fnAdapter);
     }
 
