@@ -137,7 +137,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn
     ) {
         this(ttl, keyFn, timestampFn, createFn, statefulFlatMapFn, onEvictFn,
-                true,
+                false,
                 0L);
     }
 
@@ -462,7 +462,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         if (snapshotFuture != null && snapshotFuture.isDone()) {
             // In sync mode launch countdown as soon as snapshot Future is done.
             if (countDownFuture == null) {
-                countDownAsync();
+                if (waitForFutures) {
+                    countDownAsync();
+                }
                 checkKeys();
             }
             if (clearFuture) {
@@ -579,6 +581,18 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         return false;
     }
 
+    /**
+     * Helper method that runs after snapshot future.
+     */
+    private void runAfterSnapshot() {
+        // Keep track of timer
+        snapshotIMapEndTime = System.nanoTime();
+        // If not waiting for futures, start countdown immediately
+        if (!waitForFutures) {
+            countDownAsync();
+        }
+    }
+
     @Override
     public boolean saveToSnapshot() {
         if (inComplete) {
@@ -599,7 +613,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 snapshotFuture = snapshotIMap.setAllAsync(keyToState.entrySet().stream().collect(Collectors.toMap(
                         entry -> new SnapshotIMapKey<>(entry.getKey(), snapshotId),
                         entry -> entry.getValue().item()))).toCompletableFuture()
-                        .thenRun(() -> snapshotIMapEndTime = System.nanoTime());
+                        .thenRun(this::runAfterSnapshot);
                 if (snapshotDelayMillis != 0L) {
                     snapshotFuture = snapshotFuture.thenRun(() -> {
                         try {
