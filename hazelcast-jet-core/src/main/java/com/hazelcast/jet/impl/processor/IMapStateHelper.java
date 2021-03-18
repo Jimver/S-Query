@@ -16,6 +16,8 @@
 
 package com.hazelcast.jet.impl.processor;
 
+import com.hazelcast.jet.config.JetConfig;
+
 import java.text.MessageFormat;
 import java.util.UUID;
 
@@ -25,11 +27,27 @@ public final class IMapStateHelper {
     // Name of IMap containing all snapshot state Imap names, where key = vertex name and value = imap name
     public static final String VERTEX_TO_SS_STATE_IMAP_NAME = "snapshotmapnames";
     // Boolean which controls if IMap state is used or not, use as global toggle for IMap state
-    public static final boolean ENABLE_IMAP_STATE = true;
+    private static boolean enableImapState;
+    // Used to keep track if imap state is cached
+    private static boolean enableImapStateCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
 
+    }
+
+    /**
+     * Helper method that gets whether the IMap state is enabled.
+     *
+     * @param config The JetConfig where the "enable.imap.state" property should be "true" of "false"
+     * @return True if the config says true, false if it says false.
+     */
+    public static boolean getEnableImapState(JetConfig config) {
+        if (!enableImapStateCached) {
+            enableImapState = Boolean.parseBoolean(config.getProperties().getProperty("enable.imap.state"));
+            enableImapStateCached = true;
+        }
+        return enableImapState;
     }
 
     public static String getBenchmarkIMapTimesListName(String jobName) {

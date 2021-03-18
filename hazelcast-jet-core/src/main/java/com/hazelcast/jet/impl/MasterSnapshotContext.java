@@ -59,7 +59,6 @@ import static com.hazelcast.jet.datamodel.Tuple3.tuple3;
 import static com.hazelcast.jet.impl.JobRepository.EXPORTED_SNAPSHOTS_PREFIX;
 import static com.hazelcast.jet.impl.JobRepository.exportedSnapshotMapName;
 import static com.hazelcast.jet.impl.JobRepository.snapshotDataMapName;
-import static com.hazelcast.jet.impl.processor.IMapStateHelper.ENABLE_IMAP_STATE;
 import static com.hazelcast.jet.impl.util.LoggingUtil.logFine;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
@@ -132,7 +131,7 @@ class MasterSnapshotContext {
         if (benchmarkListsInitialized) {
             return;
         }
-        if (ENABLE_IMAP_STATE) {
+        if (IMapStateHelper.getEnableImapState(mc.getJetService().getConfig())) {
             String iMapTimesListName = IMapStateHelper.getBenchmarkIMapTimesListName(mc.jobName());
             imapStateSnapshotTimes = mc.getJetService().getJetInstance().getHazelcastInstance().getList(iMapTimesListName);
         }
@@ -204,7 +203,7 @@ class MasterSnapshotContext {
 
     void prepareIMapStateObjects(long newSnapshotId) {
         // IMap state related stuff in conditional
-        if (!ENABLE_IMAP_STATE) {
+        if (!IMapStateHelper.getEnableImapState(mc.getJetService().getConfig())) {
             return;
         }
         // Countdown latch across members

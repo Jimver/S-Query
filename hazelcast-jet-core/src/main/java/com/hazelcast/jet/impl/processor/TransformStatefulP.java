@@ -19,7 +19,6 @@ package com.hazelcast.jet.impl.processor;
 import com.hazelcast.config.Config;
 import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
-import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.metrics.Probe;
@@ -40,7 +39,6 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -56,7 +54,6 @@ import java.util.stream.Collectors;
 
 import static com.hazelcast.jet.Util.entry;
 import static com.hazelcast.jet.core.BroadcastKey.broadcastKey;
-import static com.hazelcast.jet.impl.processor.IMapStateHelper.ENABLE_IMAP_STATE;
 import static com.hazelcast.jet.impl.util.Util.logLateEvent;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
@@ -103,6 +100,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private long countDownEndTime;
 
     // Snapshot variables
+    private boolean snapshotIMapEnabled;
     private long snapshotId; // Snapshot ID
     private ICountDownLatch ssCountDownLatch; // Snapshot countdown latch
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
@@ -244,13 +242,14 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     @Override
     protected void init(@Nonnull Context context) throws Exception {
+        snapshotIMapEnabled = IMapStateHelper.getEnableImapState(context.jetInstance().getConfig());
+
         // Check if enabled
-        if (!ENABLE_IMAP_STATE) {
+        if (!snapshotIMapEnabled) {
             return;
         }
         // Get HazelCastInstance
-        Collection<HazelcastInstance> hzs = Hazelcast.getAllHazelcastInstances();
-        HazelcastInstance hz = hzs.toArray(new HazelcastInstance[0])[0];
+        HazelcastInstance hz = context.jetInstance().getHazelcastInstance();
 
         // Get IMap, AtomicLong and CountDownLatch names
         String vertexName = context.vertexName();
@@ -362,7 +361,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
         // Fast return
-        if (!ENABLE_IMAP_STATE) {
+        if (!snapshotIMapEnabled) {
             return result;
         }
         if (liveStateIMapEnabled) {
@@ -414,7 +413,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     break;
                 }
-                if (ENABLE_IMAP_STATE) {
+                if (snapshotIMapEnabled) {
                     if (liveStateIMapEnabled) {
                         // Evict from live state IMap
                         keyToStateIMap.evict(entry.getKey());
@@ -562,7 +561,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      */
     private boolean isSnapshotDone() {
         if (emitFromTraverserToSnapshot(snapshotTraverser)) {
-            if (!ENABLE_IMAP_STATE) {
+            if (!snapshotIMapEnabled) {
                 return true;
             }
             boolean ssImapDone = checkSnapshotFutureReturn(false);
@@ -609,7 +608,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return complete();
         }
 
-        if (ENABLE_IMAP_STATE) {
+        if (snapshotIMapEnabled) {
             // Check if previous snapshot was finished correctly
             checkPreviousSnapshotFinished();
 
