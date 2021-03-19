@@ -22,14 +22,14 @@ import java.text.MessageFormat;
 import java.util.UUID;
 
 public final class IMapStateHelper {
-    // Name of IMap containing all live state Imap names, where key = vertex name and value = imap name
-    public static final String VERTEX_TO_LIVE_STATE_IMAP_NAME = "statemapnames";
-    // Name of IMap containing all snapshot state Imap names, where key = vertex name and value = imap name
-    public static final String VERTEX_TO_SS_STATE_IMAP_NAME = "snapshotmapnames";
-    // Boolean which controls if IMap state is used or not, use as global toggle for IMap state
-    private static boolean enableImapState;
-    // Used to keep track if imap state is cached
-    private static boolean enableImapStateCached;
+    // Booleans which control if IMap state is used or not
+    private static boolean snapshotStateEnabled; // Toggle for snapshot state
+    private static boolean phaseStateEnabled; // Toggle for phase (2) snapshot state
+    private static boolean liveStateEnabled; // Toggle for live state
+    // Used to keep track if imap state boolean is already cached
+    private static boolean snapshotStateEnabledCached;
+    private static boolean phaseStateEnabledCached;
+    private static boolean liveStateEnabledCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -37,17 +37,37 @@ public final class IMapStateHelper {
     }
 
     /**
-     * Helper method that gets whether the IMap state is enabled.
+     * Helper method that gets whether the snapshot IMap state is enabled.
      *
-     * @param config The JetConfig where the "enable.imap.state" property should be "true" of "false"
+     * @param config The JetConfig where the "state.snapshot" property should be "true" of "false"
      * @return True if the config says true, false if it says false.
      */
-    public static boolean getEnableImapState(JetConfig config) {
-        if (!enableImapStateCached) {
-            enableImapState = Boolean.parseBoolean(config.getProperties().getProperty("enable.imap.state"));
-            enableImapStateCached = true;
+    public static boolean isSnapshotStateEnabled(JetConfig config) {
+        if (!snapshotStateEnabledCached) {
+            snapshotStateEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.snapshot"));
+            snapshotStateEnabledCached = true;
         }
-        return enableImapState;
+        return snapshotStateEnabled;
+    }
+
+    public static boolean isPhaseStateEnabled(JetConfig config) {
+        if (!phaseStateEnabledCached) {
+            phaseStateEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.phase"));
+            phaseStateEnabledCached = true;
+        }
+        return phaseStateEnabled;
+    }
+
+    public static boolean isLiveStateEnabled(JetConfig config) {
+        if (!liveStateEnabledCached) {
+            liveStateEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.live"));
+            liveStateEnabledCached = true;
+        }
+        return liveStateEnabled;
+    }
+
+    public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
+        return isSnapshotStateEnabled(config) || isPhaseStateEnabled(config);
     }
 
     public static String getBenchmarkIMapTimesListName(String jobName) {
@@ -62,8 +82,34 @@ public final class IMapStateHelper {
         return String.format("benchmark-phase2-%s", jobName);
     }
 
-    public static String getSnapshotMapName(String liveMapName) {
-        return MessageFormat.format("snapshot-{0}", liveMapName);
+    /**
+     * Helper method for live state IMap name.
+     *
+     * @param vertexName The name of the transform
+     * @return The live state IMap name for the given transform
+     */
+    public static String getLiveStateImapName(String vertexName) {
+        return vertexName;
+    }
+
+    /**
+     * Helper method for snapshot state IMap name.
+     *
+     * @param vertexName The name of the transform
+     * @return The snapshot state IMap name for the given transform
+     */
+    public static String getSnapshotMapName(String vertexName) {
+        return MessageFormat.format("snapshot-{0}", vertexName);
+    }
+
+    /**
+     * Helper method for phase (2) snapshot state IMap name.
+     *
+     * @param vertexName The name of the transform
+     * @return The phase snapshot state IMap name for the given transform
+     */
+    public static String getPhaseSnapshotMapName(String vertexName) {
+        return MessageFormat.format("phase-snapshot-{0}", vertexName);
     }
 
     public static String getSnapshotIdName(String jobName) {

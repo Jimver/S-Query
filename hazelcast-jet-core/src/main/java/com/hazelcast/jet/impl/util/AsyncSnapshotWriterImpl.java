@@ -23,9 +23,12 @@ import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.internal.serialization.SerializationService;
 import com.hazelcast.internal.serialization.impl.HeapData;
 import com.hazelcast.internal.serialization.impl.SerializationConstants;
+import com.hazelcast.jet.datamodel.TimestampedItem;
 import com.hazelcast.jet.impl.JetService;
 import com.hazelcast.jet.impl.execution.SnapshotContext;
 import com.hazelcast.jet.impl.execution.init.JetInitDataSerializerHook;
+import com.hazelcast.jet.impl.processor.IMapStateHelper;
+import com.hazelcast.jet.impl.processor.SnapshotIMapKey;
 import com.hazelcast.logging.ILogger;
 import com.hazelcast.map.IMap;
 import com.hazelcast.nio.ObjectDataInput;
@@ -61,6 +64,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     private final CustomByteArrayOutputStream[] buffers;
     private final int[] partitionKeys;
+    private final JetService jetService;
     private int partitionSequence;
     private final ILogger logger;
     private final NodeEngine nodeEngine;
@@ -69,9 +73,13 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private final String vertexName;
     private final int memberCount;
     private IMap<SnapshotDataKey, Object> currentMap;
+    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
     private long currentSnapshotId;
     private final AtomicReference<Throwable> firstError = new AtomicReference<>();
     private final AtomicInteger numActiveFlushes = new AtomicInteger();
+    private final SerializationService serializationService;
+
+    private boolean putAsyncStateDone; // Varialbe to keep track if put to state map is done in offer()
 
     // stats
     private long totalKeys;
@@ -106,15 +114,13 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         this.snapshotContext = snapshotContext;
         this.vertexName = vertexName;
         this.memberCount = memberCount;
+        this.serializationService = serializationService;
         currentSnapshotId = snapshotContext.currentSnapshotId();
 
-        useBigEndian = !nodeEngine.getHazelcastInstance().getConfig().getSerializationConfig().isUseNativeByteOrder()
-                || ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN;
-        Bits.writeInt(serializedByteArrayHeader, Bits.INT_SIZE_IN_BYTES, SerializationConstants.CONSTANT_TYPE_BYTE_ARRAY,
-                useBigEndian);
+        useBigEndian = isBigEndian();
 
         buffers = createAndInitBuffers(chunkSize, partitionService.getPartitionCount(), serializedByteArrayHeader);
-        JetService jetService = nodeEngine.getService(JetService.SERVICE_NAME);
+        this.jetService = nodeEngine.getService(JetService.SERVICE_NAME);
         this.partitionKeys = jetService.getSharedPartitionKeys();
         this.partitionSequence = memberIndex;
 
@@ -124,6 +130,18 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         valueTerminator = Arrays.copyOfRange(valueTerminatorWithHeader, HeapData.TYPE_OFFSET,
                 valueTerminatorWithHeader.length);
         usableChunkCapacity = chunkSize - valueTerminator.length - serializedByteArrayHeader.length;
+        checkChunkCapacity(chunkSize);
+    }
+
+    private boolean isBigEndian() {
+        boolean bigEndian = !nodeEngine.getHazelcastInstance().getConfig().getSerializationConfig().isUseNativeByteOrder()
+                || ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN;
+        Bits.writeInt(serializedByteArrayHeader, Bits.INT_SIZE_IN_BYTES, SerializationConstants.CONSTANT_TYPE_BYTE_ARRAY,
+                bigEndian);
+        return bigEndian;
+    }
+
+    private void checkChunkCapacity(int chunkSize) {
         if (usableChunkCapacity <= 0) {
             throw new IllegalArgumentException("too small chunk size: " + chunkSize);
         }
@@ -162,10 +180,20 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         int partitionId = partitionService.getPartitionId(entry.getKey());
         int length = entry.getKey().totalSize() + entry.getValue().totalSize() - 2 * HeapData.TYPE_OFFSET;
 
+        // Only execute putAsyncToStateMap once
+        if (IMapStateHelper.isPhaseStateEnabled(jetService.getConfig()) && !putAsyncStateDone) {
+            boolean putAsyncStateResult = putAsyncToStateMap(entry);
+            if (putAsyncStateResult) {
+                putAsyncStateDone = true;
+            } else {
+                return false;
+            }
+        }
+
         // if the entry is larger than usableChunkSize, send it in its own chunk. We avoid adding it to the
         // ByteArrayOutputStream since it would expand it beyond its maximum capacity.
         if (length > usableChunkCapacity) {
-            return putAsyncToMap(partitionId, () -> {
+            boolean putAsyncResult = putAsyncToMap(partitionId, () -> {
                 byte[] data = new byte[serializedByteArrayHeader.length + length + valueTerminator.length];
                 totalKeys++;
                 int offset = 0;
@@ -185,6 +213,10 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
                 return new HeapData(data);
             });
+            if (putAsyncResult) {
+                putAsyncStateDone = false;
+            }
+            return putAsyncResult;
         }
 
         // if the buffer after adding this entry and terminator would exceed the capacity limit, flush it first
@@ -197,6 +229,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         writeWithoutHeader(entry.getKey(), buffer);
         writeWithoutHeader(entry.getValue(), buffer);
         totalKeys++;
+        putAsyncStateDone = false;
         return true;
     }
 
@@ -265,6 +298,28 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         return true;
     }
 
+    @CheckReturnValue
+    private boolean putAsyncToStateMap(Entry<? extends Data, ? extends Data> entry) {
+        if (!initStateMap()) {
+            return false;
+        }
+        if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
+            return false;
+        }
+        try {
+            Object key = serializationService.toObject(entry.getKey());
+            TimestampedItem<Object> timeStampedValue = serializationService.toObject(entry.getValue());
+            Object value = timeStampedValue.item();
+            CompletableFuture<Object> future =
+                    stateMap.putAsync(new SnapshotIMapKey<>(key, currentSnapshotId), value).toCompletableFuture();
+            future.whenComplete(putResponseConsumer);
+            numActiveFlushes.incrementAndGet();
+        } catch (HazelcastInstanceNotActiveException ignored) {
+            return false;
+        }
+        return true;
+    }
+
     private boolean initCurrentMap() {
         if (currentMap == null) {
             String mapName = snapshotContext.currentMapName();
@@ -272,6 +327,15 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 return false;
             }
             currentMap = nodeEngine.getHazelcastInstance().getMap(mapName);
+            this.currentSnapshotId = snapshotContext.currentSnapshotId();
+        }
+        return true;
+    }
+
+    private boolean initStateMap() {
+        if (stateMap == null) {
+            String mapName = IMapStateHelper.getPhaseSnapshotMapName(vertexName);
+            stateMap = nodeEngine.getHazelcastInstance().getMap(mapName);
             this.currentSnapshotId = snapshotContext.currentSnapshotId();
         }
         return true;

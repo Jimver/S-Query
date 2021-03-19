@@ -26,6 +26,7 @@ import com.hazelcast.internal.util.counters.Counter;
 import com.hazelcast.internal.util.counters.SwCounter;
 import com.hazelcast.jet.Traverser;
 import com.hazelcast.jet.Traversers;
+import com.hazelcast.jet.config.JetConfig;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.BroadcastKey;
 import com.hazelcast.jet.core.ResettableSingletonTraverser;
@@ -98,13 +99,14 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private long countDownEndTime;
 
     // Snapshot variables
-    private boolean snapshotIMapEnabled;
     private long snapshotId; // Snapshot ID
     private ICountDownLatch ssCountDownLatch; // Snapshot countdown latch
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
     private final boolean waitForFutures; // Wait for futures
     private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
+
+    private JetConfig jetConfig; // Jet Config
 
     static class SnapshotQueueItem<K, S> {
         public enum Operation {
@@ -190,24 +192,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         return snapshotFuture == null;
     }
 
-    /**
-     * Helper method populating the vertex to name lookup maps.
-     *
-     * @param hz              Hazelcast instance
-     * @param stateMapName    Live state IMap name
-     * @param snapshotMapName Snapshot state IMap name
-     * @param vertexName      The vertex name of this transform
-     */
-    private void populateVertexLookupImaps(HazelcastInstance hz,
-                                           String stateMapName,
-                                           String snapshotMapName,
-                                           String vertexName) {
-        Map<String, String> stateMapNames = hz.getMap(IMapStateHelper.VERTEX_TO_LIVE_STATE_IMAP_NAME);
-        stateMapNames.put(vertexName, stateMapName);
-        Map<String, String> snapshotMapNames = hz.getMap(IMapStateHelper.VERTEX_TO_SS_STATE_IMAP_NAME);
-        snapshotMapNames.put(vertexName, snapshotMapName);
-    }
-
 
     /**
      * Helper for getting an IMap config.
@@ -226,53 +210,40 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         return mapConfig[0];
     }
 
-    /**
-     * Helper method for state IMap name.
-     *
-     * @param vertexName The Vertex name
-     * @return The IMap name consisting of node name, vertex name, and memory address of processor
-     */
-    private String getLiveStateImapName(String vertexName) {
-        return vertexName;
-    }
-
     @Override
     protected void init(@Nonnull Context context) throws Exception {
-        snapshotIMapEnabled = IMapStateHelper.getEnableImapState(context.jetInstance().getConfig());
-
-        // Check if enabled
-        if (!snapshotIMapEnabled) {
+        jetConfig = context.jetInstance().getConfig();
+        if (!(IMapStateHelper.isSnapshotStateEnabled(jetConfig) || IMapStateHelper.isLiveStateEnabled(jetConfig))) {
             return;
         }
+
         // Get HazelCastInstance
         HazelcastInstance hz = context.jetInstance().getHazelcastInstance();
 
         // Get IMap, AtomicLong and CountDownLatch names
         String vertexName = context.vertexName();
         String jobName = context.jobConfig().getName();
-        String liveMapName = getLiveStateImapName(vertexName);
-        String snapshotMapName = IMapStateHelper.getSnapshotMapName(liveMapName);
-        String countDownLatchName = IMapStateHelper.memberCountdownLatchHelper(
-                context.jetInstance().getCluster().getLocalMember().getUuid(),
-                jobName
-        );
-        getLogger().info("Getting member countdown latch name: " + countDownLatchName);
-
         // Add map config
         Config config = hz.getConfig();
-        MapConfig stateMapConfig = getMapConfig(liveMapName);
-        MapConfig snapshotMapConfig0 = getMapConfig(snapshotMapName);
-        config.addMapConfig(stateMapConfig);
-        config.addMapConfig(snapshotMapConfig0);
-
-        // Add map names to Distributed List
-        populateVertexLookupImaps(hz, liveMapName, snapshotMapName, vertexName);
-
-        keyToStateIMap = hz.getMap(liveMapName);
-        snapshotIMap = hz.getMap(snapshotMapName);
-
-        // Initialize snapshot countdown latch
-        ssCountDownLatch = hz.getCPSubsystem().getCountDownLatch(countDownLatchName);
+        if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
+            String liveMapName = IMapStateHelper.getLiveStateImapName(vertexName);
+            MapConfig stateMapConfig = getMapConfig(liveMapName);
+            config.addMapConfig(stateMapConfig);
+            keyToStateIMap = hz.getMap(liveMapName);
+        }
+        if (IMapStateHelper.isSnapshotStateEnabled(jetConfig)) {
+            String snapshotMapName = IMapStateHelper.getSnapshotMapName(vertexName);
+            MapConfig snapshotMapConfig = getMapConfig(snapshotMapName);
+            config.addMapConfig(snapshotMapConfig);
+            snapshotIMap = hz.getMap(snapshotMapName);
+            String countDownLatchName = IMapStateHelper.memberCountdownLatchHelper(
+                    context.jetInstance().getCluster().getLocalMember().getUuid(),
+                    jobName
+            );
+            getLogger().info("Initializing member countdown latch in TransformP: " + countDownLatchName);
+            // Initialize snapshot countdown latch
+            ssCountDownLatch = hz.getCPSubsystem().getCountDownLatch(countDownLatchName);
+        }
     }
 
     @Override
@@ -357,11 +328,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
         // Fast return
-        if (!snapshotIMapEnabled) {
-            return result;
+        if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
+            keyToStateIMap.set(key, state); // Put to live state IMap
         }
-        keyToStateIMap.set(key, state); // Put to live state IMap
-        processSnapshotItem(key, state, snapshotId, SnapshotQueueItem.Operation.PUT); // Put state to snapshot IMap
+        if (IMapStateHelper.isSnapshotStateEnabled(jetConfig)) {
+            processSnapshotItem(key, state, snapshotId, SnapshotQueueItem.Operation.PUT); // Put state to snapshot IMap
+        }
         return result;
     }
 
@@ -407,11 +379,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                 if (lastTouched >= Util.subtractClamped(currentWm, ttl)) {
                     break;
                 }
-                if (snapshotIMapEnabled) {
-                    if (liveStateIMapEnabled) {
-                        // Evict from live state IMap
-                        keyToStateIMap.evict(entry.getKey());
-                    }
+                if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
+                    // Evict from live state IMap
+                    keyToStateIMap.evict(entry.getKey());
+                }
+                if (IMapStateHelper.isSnapshotStateEnabled(jetConfig)) {
                     // Evict from snapshot IMap
                     processSnapshotItem(entry.getKey(), null, snapshotId, SnapshotQueueItem.Operation.DELETE);
                 }
@@ -555,7 +527,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      */
     private boolean isSnapshotDone() {
         if (emitFromTraverserToSnapshot(snapshotTraverser)) {
-            if (!snapshotIMapEnabled) {
+            if (!IMapStateHelper.isSnapshotStateEnabled(jetConfig)) {
                 return true;
             }
             boolean ssImapDone = checkSnapshotFutureReturn(false);
@@ -602,7 +574,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return complete();
         }
 
-        if (snapshotIMapEnabled) {
+        if (IMapStateHelper.isSnapshotStateEnabled(jetConfig)) {
             // Check if previous snapshot was finished correctly
             checkPreviousSnapshotFinished();
 

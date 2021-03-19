@@ -281,7 +281,7 @@ public class ExecutionContext implements DynamicMetricsProvider {
                 return CompletableFuture.completedFuture(new SnapshotPhase1Result(0, 0, 0, null));
             }
 
-            if (IMapStateHelper.getEnableImapState(
+            if (IMapStateHelper.isSnapshotStateEnabled(
                     ((JetService) nodeEngine.getService(JetService.SERVICE_NAME)).getConfig())) {
                 // Get amount of transformstateful processor tasklets.
                 int transformStatefulP = (int) this.tasklets.stream()

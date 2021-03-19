@@ -51,7 +51,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.hazelcast.jet.Util.idToString;
 import static com.hazelcast.jet.core.JobStatus.RUNNING;
@@ -67,7 +67,6 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
  */
 class MasterSnapshotContext {
 
-    private static final long CLUSTER_SS_CDL_TIMEOUT_SECONDS = 10;
     @SuppressWarnings("WeakerAccess") // accessed from subclass in jet-enterprise
     final MasterContext mc;
     private final ILogger logger;
@@ -104,8 +103,9 @@ class MasterSnapshotContext {
 
     // Fields for snapshot count down latch
     private ICountDownLatch ssCountDownLatch;
-    private boolean countDownLatchInitialized;
+    private boolean distObjectInitialized;
     private final List<IMap<SnapshotIMapKey<Object>, Object>> snapshotIMaps = new ArrayList<>();
+    private final List<IMap<SnapshotIMapKey<Object>, Object>> phaseSnapshotIMaps = new ArrayList<>();
     private IAtomicLong snapshotId;
 
     // Timer variables
@@ -131,7 +131,7 @@ class MasterSnapshotContext {
         if (benchmarkListsInitialized) {
             return;
         }
-        if (IMapStateHelper.getEnableImapState(mc.getJetService().getConfig())) {
+        if (IMapStateHelper.isSnapshotStateEnabled(mc.getJetService().getConfig())) {
             String iMapTimesListName = IMapStateHelper.getBenchmarkIMapTimesListName(mc.jobName());
             imapStateSnapshotTimes = mc.getJetService().getJetInstance().getHazelcastInstance().getList(iMapTimesListName);
         }
@@ -146,13 +146,9 @@ class MasterSnapshotContext {
      * Helper method that initializes the countdown latch and snapshot IMap if it was not initialized already.
      */
     private void initDistObjectsIfNotInitialized() {
-        if (countDownLatchInitialized) {
+        if (distObjectInitialized) {
             return;
         }
-        String clusterCdlName = IMapStateHelper.clusterCountdownLatchHelper(mc.jobName());
-        logger.info("Initializing cluster countdown latch: " + clusterCdlName);
-        ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
-                .getCountDownLatch(clusterCdlName);
         Set<String> vertexNames = new HashSet<>();
         mc.executionPlanMap().forEach(((memberInfo, executionPlan) -> executionPlan.getVertices().forEach(vertexDef -> {
             Processor p = new ArrayList<>(vertexDef.processorSupplier().get(1)).get(0);
@@ -161,17 +157,35 @@ class MasterSnapshotContext {
                 vertexNames.add(vertexName);
             }
         })));
-        // Get snapshot IMap names, then get the IMap objects and add them to the IMap list
-        List<String> snapshotMapNames = vertexNames.stream().map(IMapStateHelper::getSnapshotMapName)
-                .collect(Collectors.toList());
-        snapshotMapNames.forEach(mapName ->
-                logger.info("Snapshot IMap name to evict from in master context: " + mapName));
-        snapshotMapNames.forEach(mapName -> snapshotIMaps.add(
-                mc.getJetService().getJetInstance().getHazelcastInstance().getMap(mapName)));
-        String snapshotIdName = IMapStateHelper.getSnapshotIdName(mc.jobName());
-        snapshotId = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
-                .getAtomicLong(snapshotIdName);
-        countDownLatchInitialized = true;
+
+        // For phase state only
+        if (IMapStateHelper.isPhaseStateEnabled(mc.getJetService().getConfig())) {
+            Stream<String> phaseSnapshotMapNames = vertexNames.stream().map(IMapStateHelper::getPhaseSnapshotMapName);
+            phaseSnapshotMapNames = phaseSnapshotMapNames.peek(mapName ->
+                    logger.info("Phase snapshot IMap name to evict from in master context: " + mapName));
+            phaseSnapshotMapNames.forEach(mapName -> phaseSnapshotIMaps.add(
+                    mc.getJetService().getJetInstance().getHazelcastInstance().getMap(mapName)));
+        }
+
+        // For snapshot state
+        if (IMapStateHelper.isSnapshotStateEnabled(mc.getJetService().getConfig())) {
+            String clusterCdlName = IMapStateHelper.clusterCountdownLatchHelper(mc.jobName());
+            logger.info("Initializing cluster countdown latch: " + clusterCdlName);
+            ssCountDownLatch = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                    .getCountDownLatch(clusterCdlName);
+
+            // Get snapshot IMap names, then get the IMap objects and add them to the IMap list
+            Stream<String> snapshotMapNames = vertexNames.stream().map(IMapStateHelper::getSnapshotMapName);
+            snapshotMapNames = snapshotMapNames.peek(mapName ->
+                    logger.info("Snapshot IMap name to evict from in master context: " + mapName));
+            snapshotMapNames.forEach(mapName -> snapshotIMaps.add(
+                    mc.getJetService().getJetInstance().getHazelcastInstance().getMap(mapName)));
+
+            String snapshotIdName = IMapStateHelper.getSnapshotIdName(mc.jobName());
+            snapshotId = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                    .getAtomicLong(snapshotIdName);
+        }
+        distObjectInitialized = true;
     }
 
     @SuppressWarnings("SameParameterValue")
@@ -203,50 +217,63 @@ class MasterSnapshotContext {
 
     void prepareIMapStateObjects(long newSnapshotId) {
         // IMap state related stuff in conditional
-        if (!IMapStateHelper.getEnableImapState(mc.getJetService().getConfig())) {
+        if (!IMapStateHelper.isSnapshotOrPhaseEnabled(mc.getJetService().getConfig())) {
             return;
         }
         // Countdown latch across members
         initDistObjectsIfNotInitialized();
-        logger.info(String.format("Total number of members for this job: %s, %d. Setting cluster latch. SSId: %d",
-                mc.jobName(), mc.executionPlanMap().size(), newSnapshotId));
-        boolean succeeded = ssCountDownLatch.trySetCount(mc.executionPlanMap().size());
-        if (!succeeded) {
-            logger.severe(String.format(
-                    "Countdown latch not fully counted down for job: %s, snapshot id: %d",
-                    mc.jobName(),
-                    newSnapshotId));
-        }
-        // Set snapshot id synchronously
-        long snapshotIdStart = System.nanoTime();
-        snapshotId.set(newSnapshotId);
-        long snapshotIdEnd = System.nanoTime();
-        logger.info(String.format("Set snapshot id atomic long to %d took: %d",
-                newSnapshotId, (snapshotIdEnd - snapshotIdStart)));
-        // Wait for cluster cdl to complete async
-        CompletableFuture.runAsync(() -> {
-            try {
-                long clusterCdlStart = System.nanoTime();
-                boolean result = ssCountDownLatch.await(CLUSTER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                if (!result) {
-                    logger.severe("Cluster snapshot countdown latch was not fully counted down in time! " +
-                            "Still continuing with other snapshot process for job: " + mc.jobName());
-                    return;
-                }
-                long clusterCdlEnd = System.nanoTime();
-                logger.info("Cluster level cdl took: " + (clusterCdlEnd - clusterCdlStart));
-                imapStateSnapshotTimes.add(clusterCdlEnd - clusterCdlStart);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-                Thread.currentThread().interrupt();
+        if (IMapStateHelper.isSnapshotStateEnabled(mc.getJetService().getConfig())) {
+            logger.info(String.format("Total number of members for this job: %s, %d. Setting cluster latch. SSId: %d",
+                    mc.jobName(), mc.executionPlanMap().size(), newSnapshotId));
+            boolean succeeded = ssCountDownLatch.trySetCount(mc.executionPlanMap().size());
+            if (!succeeded) {
+                logger.severe(String.format(
+                        "Countdown latch not fully counted down for job: %s, snapshot id: %d",
+                        mc.jobName(),
+                        newSnapshotId));
             }
-        });
-        // Evict older snapshot entries in each snapshot IMap
-        long executeStart = System.nanoTime();
-        snapshotIMaps.parallelStream().forEach(
-                imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
-        long executeEnd = System.nanoTime();
-        logger.info("Execute evictor took: " + (executeEnd - executeStart));
+            // Set snapshot id synchronously
+            long snapshotIdStart = System.nanoTime();
+            snapshotId.set(newSnapshotId);
+            long snapshotIdEnd = System.nanoTime();
+            logger.info(String.format("Set snapshot id atomic long to %d took: %d",
+                    newSnapshotId, (snapshotIdEnd - snapshotIdStart)));
+            // Wait for cluster cdl to complete async
+            CompletableFuture.runAsync(() -> {
+                try {
+                    long clusterCdlStart = System.nanoTime();
+                    boolean result =
+                            ssCountDownLatch.await(mc.jobConfig().getSnapshotIntervalMillis(), TimeUnit.MILLISECONDS);
+                    if (!result) {
+                        logger.severe("Cluster snapshot countdown latch was not fully counted down in time! " +
+                                "Still continuing with other snapshot process for job: " + mc.jobName());
+                        return;
+                    }
+                    long clusterCdlEnd = System.nanoTime();
+                    logger.info("Cluster level cdl took: " + (clusterCdlEnd - clusterCdlStart));
+                    imapStateSnapshotTimes.add(clusterCdlEnd - clusterCdlStart);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            // Evict older snapshot entries in each snapshot IMap
+            long executeStart = System.nanoTime();
+            snapshotIMaps.parallelStream().forEach(
+                    imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
+            long executeEnd = System.nanoTime();
+            logger.info("Execute evictor on snapshot maps took: " + (executeEnd - executeStart));
+        }
+
+        if (IMapStateHelper.isPhaseStateEnabled(mc.getJetService().getConfig())) {
+            // Evict older snapshot entries in each phase snapshot IMap
+            long executeStart = System.nanoTime();
+            phaseSnapshotIMaps.parallelStream().forEach(
+                    imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
+            long executeEnd = System.nanoTime();
+            logger.info("Execute evictor on phase maps took : " + (executeEnd - executeStart));
+        }
     }
 
     void tryBeginSnapshot() {
