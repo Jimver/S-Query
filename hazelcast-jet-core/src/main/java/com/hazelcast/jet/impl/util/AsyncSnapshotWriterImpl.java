@@ -307,9 +307,14 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             return false;
         }
         try {
-            Object key = serializationService.toObject(entry.getKey());
-            TimestampedItem<Object> timeStampedValue = serializationService.toObject(entry.getValue());
+            Object valueObject = serializationService.toObject(entry.getValue());
+            if (!(valueObject instanceof TimestampedItem)) {
+                // If it is not TimestampedItem it is most likely a watermark which should be ignored, so we are done
+                return true;
+            }
+            TimestampedItem<?> timeStampedValue = (TimestampedItem<?>) valueObject;
             Object value = timeStampedValue.item();
+            Object key = serializationService.toObject(entry.getKey());
             CompletableFuture<Object> future =
                     stateMap.putAsync(new SnapshotIMapKey<>(key, currentSnapshotId), value).toCompletableFuture();
             future.whenComplete(putResponseConsumer);
