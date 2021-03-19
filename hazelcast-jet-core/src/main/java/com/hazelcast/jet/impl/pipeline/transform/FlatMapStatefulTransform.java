@@ -45,7 +45,7 @@ public class FlatMapStatefulTransform<T, K, S, R> extends StatefulKeyedTransform
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> flatMapFn,
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn
     ) {
-        super("flatmap-stateful-keyed", upstream, ttl, keyFn, timestampFn, createFn, true, false);
+        super("flatmap-stateful-keyed", upstream, ttl, keyFn, timestampFn, createFn);
         this.statefulFlatMapFn = flatMapFn;
         this.onEvictFn = onEvictFn;
     }

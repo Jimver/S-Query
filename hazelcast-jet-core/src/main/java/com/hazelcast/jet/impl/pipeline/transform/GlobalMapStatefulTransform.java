@@ -33,21 +33,17 @@ public class GlobalMapStatefulTransform<T, S, R> extends AbstractTransform {
     private final ToLongFunctionEx<? super T> timestampFn;
     private final SupplierEx<? extends S> createFn;
     private final TriFunction<? super S, Object, ? super T, ? extends R> statefulMapFn;
-    private final boolean liveStateIMapEnabled;
-    private final boolean waitForFutures;
 
     public GlobalMapStatefulTransform(
             @Nonnull Transform upstream,
             @Nonnull ToLongFunctionEx<? super T> timestampFn,
             @Nonnull SupplierEx<? extends S> createFn,
-            @Nonnull TriFunction<? super S, Object, ? super T, ? extends R> statefulMapFn,
-            boolean liveStateIMapEnabled, boolean waitForFutures) {
+            @Nonnull TriFunction<? super S, Object, ? super T, ? extends R> statefulMapFn
+    ) {
         super("map-stateful-global", upstream);
         this.timestampFn = timestampFn;
         this.createFn = createFn;
         this.statefulMapFn = statefulMapFn;
-        this.liveStateIMapEnabled = liveStateIMapEnabled;
-        this.waitForFutures = waitForFutures;
     }
 
     @Override
@@ -55,8 +51,7 @@ public class GlobalMapStatefulTransform<T, S, R> extends AbstractTransform {
         determinedLocalParallelism(1);
         ConstantFunctionEx<T, Integer> keyFn = new ConstantFunctionEx<>(name().hashCode());
         PlannerVertex pv = p.addVertex(this, name(), determinedLocalParallelism(),
-                mapStatefulP(Long.MAX_VALUE, keyFn, timestampFn, createFn, statefulMapFn,
-                        null, liveStateIMapEnabled, waitForFutures));
+                mapStatefulP(Long.MAX_VALUE, keyFn, timestampFn, createFn, statefulMapFn, null));
         p.addEdges(this, pv.v, edge -> edge.partitioned(keyFn).distributed());
     }
 }

@@ -115,7 +115,6 @@ public class TransformStatefulPTest {
                         createState,
                         mapTrav,
                         null,
-                        true,
                         false,
                         1000L);
         TestOutbox outbox = new TestOutbox(new int[]{10}, 10);
@@ -370,9 +369,7 @@ public class TransformStatefulPTest {
                     s[0] += e.payload();
                     return jetEvent(e.timestamp(), s[0]);
                 },
-                null,
-                true,
-                false
+                null
         );
 
         TestSupport.verifyProcessor(supplier)
@@ -466,7 +463,7 @@ public class TransformStatefulPTest {
                     }
                             : null);
         } else {
-            return Processors.mapStatefulP(ttl, keyFn, timestampFn, createFn, statefulMapFn, onEvictFn, true, false);
+            return Processors.mapStatefulP(ttl, keyFn, timestampFn, createFn, statefulMapFn, onEvictFn);
         }
     }
 }

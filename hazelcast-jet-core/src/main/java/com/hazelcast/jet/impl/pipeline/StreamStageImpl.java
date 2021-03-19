@@ -105,19 +105,9 @@ public class StreamStageImpl<T> extends ComputeStageImplBase<T> implements Strea
     @Nonnull @Override
     public <S, R> StreamStage<R> mapStateful(
             @Nonnull SupplierEx<? extends S> createFn,
-            @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn,
-            boolean liveStateIMapEnabled,
-            boolean waitForFutures
-    ) {
-        return attachGlobalMapStateful(createFn, mapFn, liveStateIMapEnabled, waitForFutures);
-    }
-
-    @Nonnull @Override
-    public <S, R> StreamStage<R> mapStateful(
-            @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn
     ) {
-        return attachGlobalMapStateful(createFn, mapFn, true, false);
+        return attachGlobalMapStateful(createFn, mapFn);
     }
 
     @Nonnull @Override
@@ -125,7 +115,7 @@ public class StreamStageImpl<T> extends ComputeStageImplBase<T> implements Strea
             @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull BiPredicateEx<? super S, ? super T> filterFn
     ) {
-        return attachGlobalMapStateful(createFn, (s, t) -> filterFn.test(s, t) ? t : null, true, false);
+        return attachGlobalMapStateful(createFn, (s, t) -> filterFn.test(s, t) ? t : null);
     }
 
     @Nonnull @Override

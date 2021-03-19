@@ -52,18 +52,6 @@ public class StreamStageWithKeyImpl<T, K> extends StageWithGroupingBase<T, K> im
             long ttl,
             @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> mapFn,
-            @Nonnull TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn,
-            boolean liveStateIMapEnabled,
-            boolean waitForFutures
-    ) {
-        return attachMapStateful(ttl, createFn, mapFn, onEvictFn, liveStateIMapEnabled, waitForFutures);
-    }
-
-    @Nonnull @Override
-    public <S, R> StreamStage<R> mapStateful(
-            long ttl,
-            @Nonnull SupplierEx<? extends S> createFn,
-            @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> mapFn,
             @Nonnull TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn
     ) {
         return attachMapStateful(ttl, createFn, mapFn, onEvictFn);

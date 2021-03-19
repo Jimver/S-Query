@@ -56,22 +56,9 @@ class StageWithGroupingBase<T, K> {
             long ttl,
             @Nonnull SupplierEx<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> mapFn,
-            @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn,
-            boolean liveStateIMapEnabled,
-            boolean waitForFutures
-    ) {
-        return computeStage.attachMapStateful(
-                ttl, keyFn(), createFn, mapFn, onEvictFn, liveStateIMapEnabled, waitForFutures);
-    }
-
-    @Nonnull
-    <S, R, RET> RET attachMapStateful(
-            long ttl,
-            @Nonnull SupplierEx<? extends S> createFn,
-            @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends R> mapFn,
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends R> onEvictFn
     ) {
-        return attachMapStateful(ttl, createFn, mapFn, onEvictFn, false, true);
+        return computeStage.attachMapStateful(ttl, keyFn(), createFn, mapFn, onEvictFn);
     }
 
     @Nonnull

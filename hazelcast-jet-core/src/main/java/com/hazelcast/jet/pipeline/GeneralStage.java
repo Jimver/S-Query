@@ -159,51 +159,6 @@ public interface GeneralStage<T> extends Stage {
     );
 
     /**
-     * Attaches a stage that performs a stateful mapping operation. {@code
-     * createFn} returns the object that holds the state. Jet passes this
-     * object along with each input item to {@code mapFn}, which can update
-     * the object's state. The state object will be included in the state
-     * snapshot, so it survives job restarts. For this reason it must be
-     * serializable.
-     * <p>
-     * This sample takes a stream of {@code long} numbers representing request
-     * latencies, computes the cumulative latency of all requests so far, and
-     * starts emitting alarm messages when the cumulative latency crosses a
-     * "bad behavior" threshold:
-     * <pre>{@code
-     * StreamStage<Long> latencyAlarms = latencies.mapStateful(
-     *         LongAccumulator::new,
-     *         (sum, latency) -> {
-     *             sum.add(latency);
-     *             long cumulativeLatency = sum.get();
-     *             return (cumulativeLatency <= LATENCY_THRESHOLD)
-     *                     ? null
-     *                     : cumulativeLatency;
-     *         }
-     * );
-     * }</pre>
-     * This code has the same result as {@link #rollingAggregate
-     * latencies.rollingAggregate(summing())}.
-     *
-     * @param createFn function that returns the state object. It must be
-     *                 stateless and {@linkplain Processor#isCooperative() cooperative}.
-     * @param mapFn    function that receives the state object and the input item and
-     *                 outputs the result item. It may modify the state object. It must be
-     *                 stateless and {@linkplain Processor#isCooperative() cooperative}.
-     * @param <S>      type of the state object
-     * @param <R>      type of the result
-     * @param liveStateIMapEnabled Whether to use the live state IMap
-     * @param waitForFutures Whether to wait for futures
-     */
-    @Nonnull
-    <S, R> GeneralStage<R> mapStateful(
-            @Nonnull SupplierEx<? extends S> createFn,
-            @Nonnull BiFunctionEx<? super S, ? super T, ? extends R> mapFn,
-            boolean liveStateIMapEnabled,
-            boolean waitForFutures
-    );
-
-    /**
      * Attaches a stage that performs a stateful filtering operation. {@code
      * createFn} returns the object that holds the state. Jet passes this
      * object along with each input item to {@code filterFn}, which can update

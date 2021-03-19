@@ -68,7 +68,7 @@ import static java.util.Collections.unmodifiableMap;
  */
 public class ExecutionContext implements DynamicMetricsProvider {
 
-    private static final int MEMBER_SS_CDL_TIMEOUT_SECONDS = 1; // Member level cdl timeout (in seconds)
+    private static final int MEMBER_SS_CDL_TIMEOUT_SECONDS = 5;
     private final long jobId;
     private final long executionId;
     private final Address coordinator;
@@ -114,9 +114,6 @@ public class ExecutionContext implements DynamicMetricsProvider {
     // Member and cluster level snapshot countdown latch
     private ICountDownLatch memberSsCountDownLatch;
     private ICountDownLatch clusterSsCountDownLatch;
-
-    // Snapshot interval
-    private long snapshotIntervalMillis;
 
     public ExecutionContext(NodeEngine nodeEngine, TaskletExecutionService taskletExecService,
                             long jobId, long executionId, Address coordinator, Set<Address> participants) {
@@ -164,8 +161,6 @@ public class ExecutionContext implements DynamicMetricsProvider {
         clusterSsCountDownLatch = nodeEngine.getHazelcastInstance().getCPSubsystem()
                 .getCountDownLatch(clusterCdlName);
 
-        // Initialize snapshot interval
-        snapshotIntervalMillis = jobConfig.getSnapshotIntervalMillis();
         return this;
     }
 
@@ -303,7 +298,7 @@ public class ExecutionContext implements DynamicMetricsProvider {
                 CompletableFuture.runAsync(() -> {
                     try {
                         long memberCdlStart = System.nanoTime();
-                        boolean result = memberSsCountDownLatch.await(snapshotIntervalMillis, TimeUnit.MILLISECONDS);
+                        boolean result = memberSsCountDownLatch.await(MEMBER_SS_CDL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                         if (!result) {
                             logger.severe("Member snapshot countdown latch was not fully counted down in time! " +
                                     "Still continuing with other snapshot process for job: " + jobName);
