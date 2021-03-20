@@ -315,6 +315,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             TimestampedItem<?> timeStampedValue = (TimestampedItem<?>) valueObject;
             Object value = timeStampedValue.item();
             Object key = serializationService.toObject(entry.getKey());
+            currentSnapshotId = snapshotContext.currentSnapshotId();
             CompletableFuture<Object> future =
                     stateMap.putAsync(new SnapshotIMapKey<>(key, currentSnapshotId), value).toCompletableFuture();
             future.whenComplete(putResponseConsumer);

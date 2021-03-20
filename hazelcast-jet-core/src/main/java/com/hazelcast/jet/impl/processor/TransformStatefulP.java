@@ -99,7 +99,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private long countDownEndTime;
 
     // Snapshot variables
-    private long snapshotId; // Snapshot ID
+    private long snapshotId = -1; // Snapshot ID, start at -1 so first ssid is 0
     private ICountDownLatch ssCountDownLatch; // Snapshot countdown latch
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
@@ -327,7 +327,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
-        // Fast return
         if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
             keyToStateIMap.set(key, state); // Put to live state IMap
         }
