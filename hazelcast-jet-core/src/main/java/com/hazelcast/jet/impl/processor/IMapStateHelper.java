@@ -26,10 +26,12 @@ public final class IMapStateHelper {
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
     private static boolean phaseStateEnabled; // Toggle for phase (2) snapshot state
     private static boolean liveStateEnabled; // Toggle for live state
+    private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
     private static boolean phaseStateEnabledCached;
     private static boolean liveStateEnabledCached;
+    private static boolean phaseStateBatchEnabledCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -64,6 +66,14 @@ public final class IMapStateHelper {
             liveStateEnabledCached = true;
         }
         return liveStateEnabled;
+    }
+
+    public static boolean isBatchPhaseStateEnabled(JetConfig config) {
+        if (!phaseStateBatchEnabledCached) {
+            phaseStateBatchEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.phase.batch"));
+            phaseStateBatchEnabledCached = true;
+        }
+        return phaseStateBatchEnabled;
     }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
@@ -123,4 +133,5 @@ public final class IMapStateHelper {
     public static String memberCountdownLatchHelper(UUID memberName, String jobName) {
         return String.format("cdl-%s-%s", memberName.toString(), jobName);
     }
+
 }

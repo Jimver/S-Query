@@ -43,6 +43,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -85,6 +87,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private long totalKeys;
     private long totalChunks;
     private long totalPayloadBytes;
+
+    private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
 
     private BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
 
@@ -309,17 +313,29 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         try {
             Object valueObject = serializationService.toObject(entry.getValue());
             if (!(valueObject instanceof TimestampedItem)) {
-                // If it is not TimestampedItem it is most likely a watermark which should be ignored, so we are done
+                // If it is not TimestampedItem it is most likely a watermark which should be ignored
+                if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
+                    // If batch enabled this is where we put it to the state map
+                    CompletableFuture<Void> future = stateMap.setAllAsync(tempStateMap).toCompletableFuture();
+                    future.whenComplete(putResponseConsumer);
+                    numActiveFlushes.incrementAndGet();
+                }
+                // Either way we are done
                 return true;
             }
-            TimestampedItem<?> timeStampedValue = (TimestampedItem<?>) valueObject;
-            Object value = timeStampedValue.item();
+            Object value = ((TimestampedItem<?>) valueObject).item();
             Object key = serializationService.toObject(entry.getKey());
             currentSnapshotId = snapshotContext.currentSnapshotId();
-            CompletableFuture<Object> future =
-                    stateMap.putAsync(new SnapshotIMapKey<>(key, currentSnapshotId), value).toCompletableFuture();
-            future.whenComplete(putResponseConsumer);
-            numActiveFlushes.incrementAndGet();
+            SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
+            if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
+                // If batch mode, put to internal map
+                tempStateMap.put(ssKey, value);
+            } else {
+                // Otherwise put to state map immediately
+                CompletableFuture<Void> future = stateMap.setAsync(ssKey, value).toCompletableFuture();
+                future.whenComplete(putResponseConsumer);
+                numActiveFlushes.incrementAndGet();
+            }
         } catch (HazelcastInstanceNotActiveException ignored) {
             return false;
         }
