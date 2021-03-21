@@ -103,7 +103,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private ICountDownLatch ssCountDownLatch; // Snapshot countdown latch
     private CompletableFuture<Void> snapshotFuture; // To IMap snapshot future
     private CompletableFuture<Void> countDownFuture; // Snapshot countdown latch future
-    private final boolean waitForFutures; // Wait for futures
     private final long snapshotDelayMillis; // Delay snapshot future by this amount of milliseconds, used for testing
 
     private JetConfig jetConfig; // Jet Config
@@ -137,7 +136,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn
     ) {
         this(ttl, keyFn, timestampFn, createFn, statefulFlatMapFn, onEvictFn,
-                false,
                 0L);
     }
 
@@ -148,7 +146,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             @Nonnull Supplier<? extends S> createFn,
             @Nonnull TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn,
             @Nullable TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn,
-            boolean waitForFutures,
             long snapshotDelayMillis
     ) {
         this.ttl = ttl > 0 ? ttl : Long.MAX_VALUE;
@@ -157,7 +154,6 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
-        this.waitForFutures = waitForFutures;
         this.snapshotDelayMillis = snapshotDelayMillis;
     }
 
@@ -434,7 +430,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         if (snapshotFuture != null && snapshotFuture.isDone()) {
             // In sync mode launch countdown as soon as snapshot Future is done.
             if (countDownFuture == null) {
-                if (waitForFutures) {
+                if (IMapStateHelper.isWaitForFuturesEnabled(jetConfig)) {
                     countDownAsync();
                 }
                 checkKeys();
@@ -488,7 +484,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         boolean snapshotFutureNotDone = snapshotFuture != null;
         checkCountDownFuture(); // Check and clear countDownFuture
         boolean cdlFutureNotDone = countDownFuture != null && !countDownFuture.isDone();
-        if (!waitForFutures
+        if (!IMapStateHelper.isWaitForFuturesEnabled(jetConfig)
                 && traverserDone
                 && (snapshotFutureNotDone || cdlFutureNotDone)) {
             // snapshot Future was not null yet
@@ -512,7 +508,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * Logs the execution times of tasks in snapshot phase.
      */
     private void logSnapshotExecutionTimes() {
-        if (waitForFutures) {
+        if (IMapStateHelper.isWaitForFuturesEnabled(jetConfig)) {
             getLogger().info("Snapshot IMap time: " + (snapshotIMapEndTime - snapshotIMapStartTime));
             getLogger().info("Countdown latch time: " + (countDownEndTime - countDownStartTime));
         }
@@ -533,14 +529,14 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             boolean cdlIsDone = checkCountDownFuture();
 
             // We don't wait for IMap ss future so mark as done
-            if (!waitForFutures) {
+            if (!IMapStateHelper.isWaitForFuturesEnabled(jetConfig)) {
                 ssImapDone = true;
                 cdlIsDone = true;
             }
             // Once both are done
             if (ssImapDone && cdlIsDone) {
                 // Reset futures when waiting for them and they are done
-                if (waitForFutures) {
+                if (IMapStateHelper.isWaitForFuturesEnabled(jetConfig)) {
                     snapshotFuture = null;
                     countDownFuture = null;
                 }
@@ -560,7 +556,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         // Keep track of timer
         snapshotIMapEndTime = System.nanoTime();
         // If not waiting for futures, start countdown immediately
-        if (!waitForFutures) {
+        if (!IMapStateHelper.isWaitForFuturesEnabled(jetConfig)) {
             countDownAsync();
         }
     }
@@ -602,6 +598,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
         // Traditional snapshot traverser
         if (snapshotTraverser == null) {
+            getLogger().info(String.format("Sending %d items to traverser", keyToState.size()));
             snapshotTraverserStartTime = System.nanoTime();
             snapshotTraverser = Traversers.<Entry<?, ?>>traverseIterable(keyToState.entrySet())
                     .append(entry(broadcastKey(SnapshotKeys.WATERMARK), currentWm))

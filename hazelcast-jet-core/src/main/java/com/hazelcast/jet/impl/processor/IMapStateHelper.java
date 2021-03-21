@@ -27,11 +27,13 @@ public final class IMapStateHelper {
     private static boolean phaseStateEnabled; // Toggle for phase (2) snapshot state
     private static boolean liveStateEnabled; // Toggle for live state
     private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
+    private static boolean waitForFuturesEnabled; // Toggle for wait for futures
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
     private static boolean phaseStateEnabledCached;
     private static boolean liveStateEnabledCached;
     private static boolean phaseStateBatchEnabledCached;
+    private static boolean waitForFuturesEnabledCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -74,6 +76,14 @@ public final class IMapStateHelper {
             phaseStateBatchEnabledCached = true;
         }
         return phaseStateBatchEnabled;
+    }
+
+    public static boolean isWaitForFuturesEnabled(JetConfig config) {
+        if (!waitForFuturesEnabledCached) {
+            waitForFuturesEnabled = Boolean.parseBoolean(config.getProperties().getProperty("wait.for.futures"));
+            waitForFuturesEnabledCached = true;
+        }
+        return waitForFuturesEnabled;
     }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {

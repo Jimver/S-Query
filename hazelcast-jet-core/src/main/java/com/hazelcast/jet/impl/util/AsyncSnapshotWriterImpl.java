@@ -324,6 +324,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                         // Return no progress if we didn't get the lock
                         return false;
                     }
+                    logger.info(String.format("Putting %d items to phase state map", tempStateMap.size()));
                     CompletableFuture<Void> future = stateMap.setAllAsync(tempStateMap)
                             .thenRun(() -> {
                                 tempStateMap.clear();
