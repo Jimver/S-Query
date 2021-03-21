@@ -315,8 +315,9 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             if (!(valueObject instanceof TimestampedItem)) {
                 // If it is not TimestampedItem it is most likely a watermark which should be ignored
                 if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
-                    // If batch enabled this is where we put it to the state map
-                    CompletableFuture<Void> future = stateMap.setAllAsync(tempStateMap).toCompletableFuture();
+                    // If batch enabled this is where we put it to the state map, clear the temp map afterwards
+                    CompletableFuture<Void> future = stateMap.setAllAsync(tempStateMap)
+                            .thenRun(tempStateMap::clear).toCompletableFuture();
                     future.whenComplete(putResponseConsumer);
                     numActiveFlushes.incrementAndGet();
                 }
