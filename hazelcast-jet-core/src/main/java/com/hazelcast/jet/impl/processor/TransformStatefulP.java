@@ -24,7 +24,6 @@ import com.hazelcast.cp.ICountDownLatch;
 import com.hazelcast.internal.metrics.Probe;
 import com.hazelcast.internal.util.counters.Counter;
 import com.hazelcast.internal.util.counters.SwCounter;
-import com.hazelcast.jet.JetInstance;
 import com.hazelcast.jet.Traverser;
 import com.hazelcast.jet.Traversers;
 import com.hazelcast.jet.config.JetConfig;
@@ -209,12 +208,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
 
     @Override
     protected void init(@Nonnull Context context) throws Exception {
-        JetInstance jetInstance = context.jetInstance();
-        if (jetInstance == null) {
-            jetConfig = null;
-        } else {
-            jetConfig = jetInstance.getConfig();
-        }
+        jetConfig = context.jetInstance().getConfig();
         if (!(IMapStateHelper.isSnapshotStateEnabled(jetConfig) || IMapStateHelper.isLiveStateEnabled(jetConfig))) {
             return;
         }
