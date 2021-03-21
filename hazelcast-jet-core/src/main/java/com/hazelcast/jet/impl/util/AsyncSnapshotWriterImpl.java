@@ -50,6 +50,8 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
@@ -89,6 +91,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private long totalPayloadBytes;
 
     private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
+    private final Lock tempStateMapLock = new ReentrantLock();
 
     private BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
 
@@ -316,8 +319,16 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 // If it is not TimestampedItem it is most likely a watermark which should be ignored
                 if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
                     // If batch enabled this is where we put it to the state map, clear the temp map afterwards
+                    boolean gotLock = tempStateMapLock.tryLock();
+                    if (!gotLock) {
+                        // Return no progress if we didn't get the lock
+                        return false;
+                    }
                     CompletableFuture<Void> future = stateMap.setAllAsync(tempStateMap)
-                            .thenRun(tempStateMap::clear).toCompletableFuture();
+                            .thenRun(() -> {
+                                tempStateMap.clear();
+                                tempStateMapLock.unlock();
+                            }).toCompletableFuture();
                     future.whenComplete(putResponseConsumer);
                     numActiveFlushes.incrementAndGet();
                 }
@@ -333,7 +344,13 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 tempStateMap.put(ssKey, value);
             } else {
                 // Otherwise put to state map immediately
-                CompletableFuture<Void> future = stateMap.setAsync(ssKey, value).toCompletableFuture();
+                boolean gotLock = tempStateMapLock.tryLock();
+                if (!gotLock) {
+                    // Return no progress if we didn't get the lock
+                    return false;
+                }
+                CompletableFuture<Void> future = stateMap.setAsync(ssKey, value)
+                        .thenRun(tempStateMapLock::unlock).toCompletableFuture();
                 future.whenComplete(putResponseConsumer);
                 numActiveFlushes.incrementAndGet();
             }
