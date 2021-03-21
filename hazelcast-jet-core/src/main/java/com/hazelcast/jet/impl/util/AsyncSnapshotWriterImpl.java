@@ -342,16 +342,16 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
             if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
                 // If batch mode, put to internal map
-                tempStateMap.put(ssKey, value);
-            } else {
-                // Otherwise put to state map immediately
                 boolean gotLock = tempStateMapLock.tryLock();
                 if (!gotLock) {
                     // Return no progress if we didn't get the lock
                     return false;
                 }
-                CompletableFuture<Void> future = stateMap.setAsync(ssKey, value)
-                        .thenRun(tempStateMapLock::unlock).toCompletableFuture();
+                tempStateMap.put(ssKey, value);
+                tempStateMapLock.unlock();
+            } else {
+                // Otherwise put to state map immediately
+                CompletableFuture<Void> future = stateMap.setAsync(ssKey, value).toCompletableFuture();
                 future.whenComplete(putResponseConsumer);
                 numActiveFlushes.incrementAndGet();
             }
