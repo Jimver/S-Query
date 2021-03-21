@@ -50,8 +50,6 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
@@ -83,15 +81,18 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private final AtomicInteger numActiveFlushes = new AtomicInteger();
     private final SerializationService serializationService;
 
-    private boolean putAsyncStateDone; // Varialbe to keep track if put to state map is done in offer()
+    // Varialbe to keep track if put to state map is done in offer()
+    private AtomicReference<Boolean> putAsyncStateDone = new AtomicReference<>(false);
 
     // stats
     private long totalKeys;
     private long totalChunks;
     private long totalPayloadBytes;
 
+    // Temporary state map
     private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
-    private final Lock tempStateMapLock = new ReentrantLock();
+    // Lock for above temp state map
+    private AtomicReference<Boolean> tempStateMapLock = new AtomicReference<>(false);
 
     private BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
 
@@ -188,10 +189,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         int length = entry.getKey().totalSize() + entry.getValue().totalSize() - 2 * HeapData.TYPE_OFFSET;
 
         // Only execute putAsyncToStateMap once
-        if (IMapStateHelper.isPhaseStateEnabled(jetService.getConfig()) && !putAsyncStateDone) {
+        if (IMapStateHelper.isPhaseStateEnabled(jetService.getConfig())
+                && !Boolean.TRUE.equals(putAsyncStateDone.get())) {
             boolean putAsyncStateResult = putAsyncToStateMap(entry);
             if (putAsyncStateResult) {
-                putAsyncStateDone = true;
+                putAsyncStateDone.set(true);
             } else {
                 return false;
             }
@@ -221,7 +223,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 return new HeapData(data);
             });
             if (putAsyncResult) {
-                putAsyncStateDone = false;
+                putAsyncStateDone.set(false);
             }
             return putAsyncResult;
         }
@@ -236,7 +238,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         writeWithoutHeader(entry.getKey(), buffer);
         writeWithoutHeader(entry.getValue(), buffer);
         totalKeys++;
-        putAsyncStateDone = false;
+        putAsyncStateDone.set(false);
         return true;
     }
 
@@ -305,36 +307,69 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         return true;
     }
 
+    /**
+     * Helper for locking the temp state map lock.
+     *
+     * @return true if we got the lock, false otherwise
+     */
+    private boolean lockStateMap() {
+        return tempStateMapLock.compareAndSet(false, true);
+    }
+
+    /**
+     * Helper for unlocking the temp state map lock.
+     */
+    private void unlockStateMap() {
+        tempStateMapLock.set(false);
+    }
+
+    /**
+     * Handler for non timestamped item.
+     *
+     * @return true if handling was done, false otherwise
+     */
+    private boolean handleNonTimestamped() {
+        // If it is not TimestampedItem it is most likely a watermark
+        if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
+            // If batch enabled this is where we put it to the state map, clear the temp map afterwards
+            int amountInTempState = tempStateMap.size();
+            if (amountInTempState == 0) {
+                // Nothing in temp state map so we are done
+                return true;
+            }
+            if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
+                logger.info("Couldn't get async op for setAllAsync");
+                return false;
+            }
+            boolean gotLock = lockStateMap();
+            if (!gotLock) {
+                logger.info("Couldn't get lock for setAllAsync");
+                // Return no progress if we didn't get the lock
+                return false;
+            }
+            logger.info(String.format("Putting %d items to phase state map", amountInTempState));
+            stateMap.setAllAsync(tempStateMap)
+                    .thenRun(() -> {
+                        tempStateMap.clear();
+                        logger.info("Releasing lock from setAllAsync");
+                        unlockStateMap();
+                    }).toCompletableFuture().whenComplete(putResponseConsumer);
+            numActiveFlushes.incrementAndGet();
+        }
+        // We are done as batch setAllAsync has started
+        // (and if batch is disabled no need to do anything with watermark anyway)
+        return true;
+    }
+
     @CheckReturnValue
     private boolean putAsyncToStateMap(Entry<? extends Data, ? extends Data> entry) {
         if (!initStateMap()) {
             return false;
         }
-        if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
-            return false;
-        }
         try {
             Object valueObject = serializationService.toObject(entry.getValue());
             if (!(valueObject instanceof TimestampedItem)) {
-                // If it is not TimestampedItem it is most likely a watermark which should be ignored
-                if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
-                    // If batch enabled this is where we put it to the state map, clear the temp map afterwards
-                    boolean gotLock = tempStateMapLock.tryLock();
-                    if (!gotLock) {
-                        // Return no progress if we didn't get the lock
-                        return false;
-                    }
-                    logger.info(String.format("Putting %d items to phase state map", tempStateMap.size()));
-                    CompletableFuture<Void> future = stateMap.setAllAsync(tempStateMap)
-                            .thenRun(() -> {
-                                tempStateMap.clear();
-                                tempStateMapLock.unlock();
-                            }).toCompletableFuture();
-                    future.whenComplete(putResponseConsumer);
-                    numActiveFlushes.incrementAndGet();
-                }
-                // Either way we are done
-                return true;
+                return handleNonTimestamped();
             }
             Object value = ((TimestampedItem<?>) valueObject).item();
             Object key = serializationService.toObject(entry.getKey());
@@ -342,17 +377,24 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
             if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
                 // If batch mode, put to internal map
-                boolean gotLock = tempStateMapLock.tryLock();
+                boolean gotLock = lockStateMap();
                 if (!gotLock) {
+                    logger.info("Couldn't get lock for put to temp");
                     // Return no progress if we didn't get the lock
                     return false;
                 }
+                logger.info("Acquired lock at put to temp");
                 tempStateMap.put(ssKey, value);
-                tempStateMapLock.unlock();
+                logger.info("Releasing lock from put to temp");
+                unlockStateMap();
             } else {
+                if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
+                    logger.info("Couldn't get async op for setAsync");
+                    return false;
+                }
                 // Otherwise put to state map immediately
-                CompletableFuture<Void> future = stateMap.setAsync(ssKey, value).toCompletableFuture();
-                future.whenComplete(putResponseConsumer);
+                stateMap.setAsync(ssKey, value)
+                        .toCompletableFuture().whenComplete(putResponseConsumer);
                 numActiveFlushes.incrementAndGet();
             }
         } catch (HazelcastInstanceNotActiveException ignored) {
