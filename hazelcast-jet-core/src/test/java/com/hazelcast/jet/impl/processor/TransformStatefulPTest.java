@@ -16,13 +16,14 @@
 
 package com.hazelcast.jet.impl.processor;
 
-import com.hazelcast.core.Hazelcast;
-import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.FunctionEx;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.function.ToLongFunctionEx;
+import com.hazelcast.jet.JetInstance;
 import com.hazelcast.jet.Traverser;
 import com.hazelcast.jet.Traversers;
+import com.hazelcast.jet.config.JetConfig;
+import com.hazelcast.jet.core.JetTestSupport;
 import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.core.ResettableSingletonTraverser;
 import com.hazelcast.jet.core.Watermark;
@@ -34,11 +35,9 @@ import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.JetEvent;
 import com.hazelcast.test.HazelcastParallelParametersRunnerFactory;
 //import com.hazelcast.test.annotation.ParallelJVMTest;
-import org.junit.AfterClass;
 import org.junit.Assert;
-import org.junit.BeforeClass;
+import org.junit.Before;
 import org.junit.Test;
-//import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
@@ -55,7 +54,6 @@ import java.util.function.Supplier;
 
 import static com.hazelcast.jet.Traversers.traverseItems;
 import static com.hazelcast.jet.Util.entry;
-import static com.hazelcast.jet.core.JetTestSupport.wm;
 import static com.hazelcast.jet.impl.JetEvent.jetEvent;
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
@@ -65,8 +63,8 @@ import static java.util.Collections.singletonList;
 @RunWith(Parameterized.class)
 @Parameterized.UseParametersRunnerFactory(HazelcastParallelParametersRunnerFactory.class)
 @SuppressWarnings("checkstyle:declarationorder")
-public class TransformStatefulPTest {
-
+public class TransformStatefulPTest extends JetTestSupport {
+    private JetInstance instance;
     private final Function<Entry<Object, Long>, Traverser<Entry<Object, Long>>> expandEntryFn =
             en -> traverseItems(en, entry(en.getKey(), -en.getValue()));
     private final Function<JetEvent<Entry<Object, Long>>, Traverser<JetEvent<Entry<Object, Long>>>> expandJetEventFn =
@@ -80,14 +78,11 @@ public class TransformStatefulPTest {
         return asList(true, false);
     }
 
-    @BeforeClass
-    public static void before() {
-        HazelcastInstance hz = Hazelcast.newHazelcastInstance();
-    }
-
-    @AfterClass
-    public static void after() {
-        Hazelcast.shutdownAll();
+    @Before
+    public void setUp() {
+        JetConfig config = new JetConfig();
+        config.setProperty(IMapStateHelper.SNAPSHOT_STATE.getName(), String.valueOf(true));
+        instance = this.createJetMember(config);
     }
 
     @Test
@@ -118,7 +113,7 @@ public class TransformStatefulPTest {
                         1000L);
         TestOutbox outbox = new TestOutbox(new int[]{10}, 10);
         try {
-            p.init(outbox, new TestProcessorContext());
+            p.init(outbox, new TestProcessorContext().setJetInstance(instance));
         } catch (Exception e) {
             e.printStackTrace();
         }

@@ -17,17 +17,32 @@
 package com.hazelcast.jet.impl.processor;
 
 import com.hazelcast.jet.config.JetConfig;
+import com.hazelcast.spi.properties.HazelcastProperties;
+import com.hazelcast.spi.properties.HazelcastProperty;
 
 import java.text.MessageFormat;
 import java.util.UUID;
 
 public final class IMapStateHelper {
+    // Properties
+    public static final HazelcastProperty SNAPSHOT_STATE
+            = new HazelcastProperty("state.snapshot", false);
+    public static final HazelcastProperty PHASE_STATE
+            = new HazelcastProperty("state.snapshot", false);
+    public static final HazelcastProperty LIVE_STATE
+            = new HazelcastProperty("state.live", false);
+    public static final HazelcastProperty PHASE_BATCH
+            = new HazelcastProperty("state.phase.batch", false);
+    public static final HazelcastProperty WAIT_FOR_FUTURES
+            = new HazelcastProperty("wait.for.futures", false);
+
     // Booleans which control if IMap state is used or not
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
     private static boolean phaseStateEnabled; // Toggle for phase (2) snapshot state
     private static boolean liveStateEnabled; // Toggle for live state
     private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
+
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
     private static boolean phaseStateEnabledCached;
@@ -40,6 +55,10 @@ public final class IMapStateHelper {
 
     }
 
+    private static boolean getBool(JetConfig config, HazelcastProperty property) {
+        return new HazelcastProperties(config.getProperties()).getBoolean(property);
+    }
+
     /**
      * Helper method that gets whether the snapshot IMap state is enabled.
      *
@@ -48,7 +67,11 @@ public final class IMapStateHelper {
      */
     public static boolean isSnapshotStateEnabled(JetConfig config) {
         if (!snapshotStateEnabledCached) {
-            snapshotStateEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.snapshot"));
+            if (config == null) {
+                return false;
+            } else {
+                snapshotStateEnabled = getBool(config, SNAPSHOT_STATE);
+            }
             snapshotStateEnabledCached = true;
         }
         return snapshotStateEnabled;
@@ -56,7 +79,11 @@ public final class IMapStateHelper {
 
     public static boolean isPhaseStateEnabled(JetConfig config) {
         if (!phaseStateEnabledCached) {
-            phaseStateEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.phase"));
+            if (config == null) {
+                phaseStateEnabled = false;
+            } else {
+                phaseStateEnabled = getBool(config, PHASE_STATE);
+            }
             phaseStateEnabledCached = true;
         }
         return phaseStateEnabled;
@@ -64,7 +91,11 @@ public final class IMapStateHelper {
 
     public static boolean isLiveStateEnabled(JetConfig config) {
         if (!liveStateEnabledCached) {
-            liveStateEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.live"));
+            if (config == null) {
+                liveStateEnabled = false;
+            } else {
+                liveStateEnabled = getBool(config, LIVE_STATE);
+            }
             liveStateEnabledCached = true;
         }
         return liveStateEnabled;
@@ -72,7 +103,11 @@ public final class IMapStateHelper {
 
     public static boolean isBatchPhaseStateEnabled(JetConfig config) {
         if (!phaseStateBatchEnabledCached) {
-            phaseStateBatchEnabled = Boolean.parseBoolean(config.getProperties().getProperty("state.phase.batch"));
+            if (config == null) {
+                phaseStateBatchEnabled = false;
+            } else {
+                phaseStateBatchEnabled = getBool(config, PHASE_BATCH);
+            }
             phaseStateBatchEnabledCached = true;
         }
         return phaseStateBatchEnabled;
@@ -80,7 +115,11 @@ public final class IMapStateHelper {
 
     public static boolean isWaitForFuturesEnabled(JetConfig config) {
         if (!waitForFuturesEnabledCached) {
-            waitForFuturesEnabled = Boolean.parseBoolean(config.getProperties().getProperty("wait.for.futures"));
+            if (config == null) {
+                waitForFuturesEnabled = false;
+            } else {
+                waitForFuturesEnabled = getBool(config, WAIT_FOR_FUTURES);
+            }
             waitForFuturesEnabledCached = true;
         }
         return waitForFuturesEnabled;

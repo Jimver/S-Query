@@ -106,7 +106,7 @@ class MasterSnapshotContext {
     private boolean distObjectInitialized;
     private final List<IMap<SnapshotIMapKey<Object>, Object>> snapshotIMaps = new ArrayList<>();
     private final List<IMap<SnapshotIMapKey<Object>, Object>> phaseSnapshotIMaps = new ArrayList<>();
-    private IAtomicLong snapshotId;
+    private IAtomicLong distSnapshotId;
 
     // Timer variables
     private long beforePhase1;
@@ -149,6 +149,16 @@ class MasterSnapshotContext {
         if (distObjectInitialized) {
             return;
         }
+        // Initialize distributed snapshot id
+        String snapshotIdName = IMapStateHelper.getSnapshotIdName(mc.jobName());
+        distSnapshotId = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
+                .getAtomicLong(snapshotIdName);
+
+        // Early quit
+        if (!IMapStateHelper.isSnapshotOrPhaseEnabled(mc.getJetService().getConfig())) {
+            return;
+        }
+
         Set<String> vertexNames = new HashSet<>();
         mc.executionPlanMap().forEach(((memberInfo, executionPlan) -> executionPlan.getVertices().forEach(vertexDef -> {
             Processor p = new ArrayList<>(vertexDef.processorSupplier().get(1)).get(0);
@@ -180,10 +190,6 @@ class MasterSnapshotContext {
                     logger.info("Snapshot IMap name to evict from in master context: " + mapName));
             snapshotMapNames.forEach(mapName -> snapshotIMaps.add(
                     mc.getJetService().getJetInstance().getHazelcastInstance().getMap(mapName)));
-
-            String snapshotIdName = IMapStateHelper.getSnapshotIdName(mc.jobName());
-            snapshotId = mc.getJetService().getJetInstance().getHazelcastInstance().getCPSubsystem()
-                    .getAtomicLong(snapshotIdName);
         }
         distObjectInitialized = true;
     }
@@ -234,7 +240,7 @@ class MasterSnapshotContext {
             }
             // Set snapshot id synchronously
             long snapshotIdStart = System.nanoTime();
-            snapshotId.set(newSnapshotId);
+            distSnapshotId.set(newSnapshotId);
             long snapshotIdEnd = System.nanoTime();
             logger.info(String.format("Set snapshot id atomic long to %d took: %d",
                     newSnapshotId, (snapshotIdEnd - snapshotIdStart)));
@@ -512,6 +518,10 @@ class MasterSnapshotContext {
             } finally {
                 mc.unlock();
             }
+            // Set snapshot id synchronously
+            long snapshotIdStart = System.nanoTime();
+            distSnapshotId.set(snapshotId);
+
             afterPhase2 = System.nanoTime();
 
             if (logger.isFineEnabled()) {
@@ -519,7 +529,8 @@ class MasterSnapshotContext {
                         + (System.currentTimeMillis() - startTime) + "ms, status="
                         + (phase1Error == null ? "success" : "failure: " + phase1Error));
             }
-
+            logger.info(String.format("Set snapshot id atomic long to %d took: %d",
+                    snapshotId, (afterPhase2 - snapshotIdStart)));
             // Add times to benchmark lists
             phase1SnapshotTimes.add(beforePhase2 - beforePhase1);
             phase2SnapshotTimes.add(afterPhase2 - beforePhase2);
