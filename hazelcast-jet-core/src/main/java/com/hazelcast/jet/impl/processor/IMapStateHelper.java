@@ -141,7 +141,7 @@ public final class IMapStateHelper {
      * @return The snapshot state IMap name for the given transform
      */
     public static String getSnapshotMapName(String vertexName) {
-        return MessageFormat.format("snapshot-{0}", vertexName);
+        return MessageFormat.format("old_snapshot_{0}", vertexName);
     }
 
     /**
@@ -151,7 +151,7 @@ public final class IMapStateHelper {
      * @return The phase snapshot state IMap name for the given transform
      */
     public static String getPhaseSnapshotMapName(String vertexName) {
-        return MessageFormat.format("phase-snapshot-{0}", vertexName);
+        return MessageFormat.format("snapshot_{0}", vertexName);
     }
 
     public static String getSnapshotIdName(String jobName) {
