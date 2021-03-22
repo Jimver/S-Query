@@ -515,18 +515,23 @@ class MasterSnapshotContext {
                 mc.unlock();
             }
             // Set snapshot id synchronously
-            long snapshotIdStart = System.nanoTime();
-            distSnapshotId.set(snapshotId);
-
             afterPhase2 = System.nanoTime();
+            long snapshotIdEnd = 0;
+            if (IMapStateHelper.isSnapshotOrPhaseEnabled(mc.getJetService().getConfig())) {
+                distSnapshotId.set(snapshotId);
+                snapshotIdEnd = System.nanoTime();
+            }
+
 
             if (logger.isFineEnabled()) {
                 logger.fine("Snapshot " + snapshotId + " for " + mc.jobIdString() + " completed in "
                         + (System.currentTimeMillis() - startTime) + "ms, status="
                         + (phase1Error == null ? "success" : "failure: " + phase1Error));
             }
-            logger.info(String.format("Set snapshot id atomic long to %d took: %d",
-                    snapshotId, (afterPhase2 - snapshotIdStart)));
+            if (IMapStateHelper.isSnapshotOrPhaseEnabled(mc.getJetService().getConfig())) {
+                logger.info(String.format("Set snapshot id atomic long to %d took: %d",
+                        snapshotId, (snapshotIdEnd - afterPhase2)));
+            }
             // Add times to benchmark lists
             phase1SnapshotTimes.add(beforePhase2 - beforePhase1);
             phase2SnapshotTimes.add(afterPhase2 - beforePhase2);
