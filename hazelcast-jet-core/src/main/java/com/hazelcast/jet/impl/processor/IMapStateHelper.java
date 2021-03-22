@@ -28,7 +28,7 @@ public final class IMapStateHelper {
     public static final HazelcastProperty SNAPSHOT_STATE
             = new HazelcastProperty("state.snapshot", false);
     public static final HazelcastProperty PHASE_STATE
-            = new HazelcastProperty("state.snapshot", false);
+            = new HazelcastProperty("state.phase", false);
     public static final HazelcastProperty LIVE_STATE
             = new HazelcastProperty("state.live", false);
     public static final HazelcastProperty PHASE_BATCH
