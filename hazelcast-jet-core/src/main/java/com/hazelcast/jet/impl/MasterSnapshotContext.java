@@ -221,11 +221,7 @@ class MasterSnapshotContext {
         tryBeginSnapshot();
     }
 
-    void prepareIMapStateObjects(long newSnapshotId) {
-        // IMap state related stuff in conditional
-        if (!IMapStateHelper.isSnapshotOrPhaseEnabled(mc.getJetService().getConfig())) {
-            return;
-        }
+    void prepareDistObjects(long newSnapshotId) {
         // Countdown latch across members
         initDistObjectsIfNotInitialized();
         if (IMapStateHelper.isSnapshotStateEnabled(mc.getJetService().getConfig())) {
@@ -331,7 +327,7 @@ class MasterSnapshotContext {
             // Init benchmark lists always
             initBenchmarkListsIfNotInitialized();
 
-            prepareIMapStateObjects(newSnapshotId);
+            prepareDistObjects(newSnapshotId);
 
             Function<ExecutionPlan, Operation> factory = plan ->
                     new SnapshotPhase1Operation(mc.jobId(), localExecutionId, newSnapshotId, finalMapName, snapshotFlags);
