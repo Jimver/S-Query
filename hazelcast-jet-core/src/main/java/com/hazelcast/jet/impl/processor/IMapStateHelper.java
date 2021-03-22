@@ -56,6 +56,9 @@ public final class IMapStateHelper {
     }
 
     private static boolean getBool(JetConfig config, HazelcastProperty property) {
+        if (config == null) {
+            return Boolean.parseBoolean(property.getDefaultValue());
+        }
         return new HazelcastProperties(config.getProperties()).getBoolean(property);
     }
 
@@ -67,11 +70,7 @@ public final class IMapStateHelper {
      */
     public static boolean isSnapshotStateEnabled(JetConfig config) {
         if (!snapshotStateEnabledCached) {
-            if (config == null) {
-                return false;
-            } else {
-                snapshotStateEnabled = getBool(config, SNAPSHOT_STATE);
-            }
+            snapshotStateEnabled = getBool(config, SNAPSHOT_STATE);
             snapshotStateEnabledCached = true;
         }
         return snapshotStateEnabled;
@@ -79,11 +78,7 @@ public final class IMapStateHelper {
 
     public static boolean isPhaseStateEnabled(JetConfig config) {
         if (!phaseStateEnabledCached) {
-            if (config == null) {
-                phaseStateEnabled = false;
-            } else {
-                phaseStateEnabled = getBool(config, PHASE_STATE);
-            }
+            phaseStateEnabled = getBool(config, PHASE_STATE);
             phaseStateEnabledCached = true;
         }
         return phaseStateEnabled;
@@ -91,11 +86,7 @@ public final class IMapStateHelper {
 
     public static boolean isLiveStateEnabled(JetConfig config) {
         if (!liveStateEnabledCached) {
-            if (config == null) {
-                liveStateEnabled = false;
-            } else {
-                liveStateEnabled = getBool(config, LIVE_STATE);
-            }
+            liveStateEnabled = getBool(config, LIVE_STATE);
             liveStateEnabledCached = true;
         }
         return liveStateEnabled;
@@ -103,11 +94,7 @@ public final class IMapStateHelper {
 
     public static boolean isBatchPhaseStateEnabled(JetConfig config) {
         if (!phaseStateBatchEnabledCached) {
-            if (config == null) {
-                phaseStateBatchEnabled = false;
-            } else {
-                phaseStateBatchEnabled = getBool(config, PHASE_BATCH);
-            }
+            phaseStateBatchEnabled = getBool(config, PHASE_BATCH);
             phaseStateBatchEnabledCached = true;
         }
         return phaseStateBatchEnabled;
@@ -115,11 +102,7 @@ public final class IMapStateHelper {
 
     public static boolean isWaitForFuturesEnabled(JetConfig config) {
         if (!waitForFuturesEnabledCached) {
-            if (config == null) {
-                waitForFuturesEnabled = false;
-            } else {
-                waitForFuturesEnabled = getBool(config, WAIT_FOR_FUTURES);
-            }
+            waitForFuturesEnabled = getBool(config, WAIT_FOR_FUTURES);
             waitForFuturesEnabledCached = true;
         }
         return waitForFuturesEnabled;
