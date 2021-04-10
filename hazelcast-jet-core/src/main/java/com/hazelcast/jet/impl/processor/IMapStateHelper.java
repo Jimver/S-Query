@@ -35,6 +35,8 @@ public final class IMapStateHelper {
             = new HazelcastProperty("state.phase.batch", false);
     public static final HazelcastProperty WAIT_FOR_FUTURES
             = new HazelcastProperty("wait.for.futures", false);
+    public static final HazelcastProperty BLOB_STATE
+            = new HazelcastProperty("state.blob", true);
 
     // Booleans which control if IMap state is used or not
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
@@ -42,6 +44,7 @@ public final class IMapStateHelper {
     private static boolean liveStateEnabled; // Toggle for live state
     private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
+    private static boolean blobStateEnabled; // Toggle for serialized blob state
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -49,6 +52,7 @@ public final class IMapStateHelper {
     private static boolean liveStateEnabledCached;
     private static boolean phaseStateBatchEnabledCached;
     private static boolean waitForFuturesEnabledCached;
+    private static boolean blobStateEnabledCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -106,6 +110,14 @@ public final class IMapStateHelper {
             waitForFuturesEnabledCached = true;
         }
         return waitForFuturesEnabled;
+    }
+
+    public static boolean isBlobStateEnabled(JetConfig config) {
+        if (!blobStateEnabledCached) {
+            blobStateEnabled = getBool(config, BLOB_STATE);
+            blobStateEnabledCached = true;
+        }
+        return blobStateEnabled;
     }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {

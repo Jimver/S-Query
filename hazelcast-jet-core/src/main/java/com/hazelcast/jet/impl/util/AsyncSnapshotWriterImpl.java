@@ -185,9 +185,6 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     @Override
     @CheckReturnValue
     public boolean offer(Entry<? extends Data, ? extends Data> entry) {
-        int partitionId = partitionService.getPartitionId(entry.getKey());
-        int length = entry.getKey().totalSize() + entry.getValue().totalSize() - 2 * HeapData.TYPE_OFFSET;
-
         // Only execute putAsyncToStateMap once
         if (IMapStateHelper.isPhaseStateEnabled(jetService.getConfig())
                 && !Boolean.TRUE.equals(putAsyncStateDone.get())) {
@@ -199,45 +196,50 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             }
         }
 
-        // if the entry is larger than usableChunkSize, send it in its own chunk. We avoid adding it to the
-        // ByteArrayOutputStream since it would expand it beyond its maximum capacity.
-        if (length > usableChunkCapacity) {
-            boolean putAsyncResult = putAsyncToMap(partitionId, () -> {
-                byte[] data = new byte[serializedByteArrayHeader.length + length + valueTerminator.length];
-                totalKeys++;
-                int offset = 0;
-                System.arraycopy(serializedByteArrayHeader, 0, data, offset, serializedByteArrayHeader.length);
-                offset += serializedByteArrayHeader.length - Bits.INT_SIZE_IN_BYTES;
+        if (IMapStateHelper.isBlobStateEnabled(jetService.getConfig())) {
+            int partitionId = partitionService.getPartitionId(entry.getKey());
+            int length = entry.getKey().totalSize() + entry.getValue().totalSize() - 2 * HeapData.TYPE_OFFSET;
 
-                Bits.writeInt(data, offset, length + valueTerminator.length, useBigEndian);
-                offset += Bits.INT_SIZE_IN_BYTES;
+            // if the entry is larger than usableChunkSize, send it in its own chunk. We avoid adding it to the
+            // ByteArrayOutputStream since it would expand it beyond its maximum capacity.
+            if (length > usableChunkCapacity) {
+                boolean putAsyncResult = putAsyncToMap(partitionId, () -> {
+                    byte[] data = new byte[serializedByteArrayHeader.length + length + valueTerminator.length];
+                    totalKeys++;
+                    int offset = 0;
+                    System.arraycopy(serializedByteArrayHeader, 0, data, offset, serializedByteArrayHeader.length);
+                    offset += serializedByteArrayHeader.length - Bits.INT_SIZE_IN_BYTES;
 
-                copyWithoutHeader(entry.getKey(), data, offset);
-                offset += entry.getKey().totalSize() - HeapData.TYPE_OFFSET;
+                    Bits.writeInt(data, offset, length + valueTerminator.length, useBigEndian);
+                    offset += Bits.INT_SIZE_IN_BYTES;
 
-                copyWithoutHeader(entry.getValue(), data, offset);
-                offset += entry.getValue().totalSize() - HeapData.TYPE_OFFSET;
+                    copyWithoutHeader(entry.getKey(), data, offset);
+                    offset += entry.getKey().totalSize() - HeapData.TYPE_OFFSET;
 
-                System.arraycopy(valueTerminator, 0, data, offset, valueTerminator.length);
+                    copyWithoutHeader(entry.getValue(), data, offset);
+                    offset += entry.getValue().totalSize() - HeapData.TYPE_OFFSET;
 
-                return new HeapData(data);
-            });
-            if (putAsyncResult) {
-                putAsyncStateDone.set(false);
+                    System.arraycopy(valueTerminator, 0, data, offset, valueTerminator.length);
+
+                    return new HeapData(data);
+                });
+                if (putAsyncResult) {
+                    putAsyncStateDone.set(false);
+                }
+                return putAsyncResult;
             }
-            return putAsyncResult;
-        }
 
-        // if the buffer after adding this entry and terminator would exceed the capacity limit, flush it first
-        CustomByteArrayOutputStream buffer = buffers[partitionId];
-        if (buffer.size() + length + valueTerminator.length > buffer.capacityLimit && !flushPartition(partitionId)) {
-            return false;
-        }
+            // if the buffer after adding this entry and terminator would exceed the capacity limit, flush it first
+            CustomByteArrayOutputStream buffer = buffers[partitionId];
+            if (buffer.size() + length + valueTerminator.length > buffer.capacityLimit && !flushPartition(partitionId)) {
+                return false;
+            }
 
-        // append to buffer
-        writeWithoutHeader(entry.getKey(), buffer);
-        writeWithoutHeader(entry.getValue(), buffer);
-        totalKeys++;
+            // append to buffer
+            writeWithoutHeader(entry.getKey(), buffer);
+            writeWithoutHeader(entry.getValue(), buffer);
+            totalKeys++;
+        }
         putAsyncStateDone.set(false);
         return true;
     }
@@ -312,6 +314,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
      *
      * @return true if we got the lock, false otherwise
      */
+    @CheckReturnValue
     private boolean lockStateMap() {
         return tempStateMapLock.compareAndSet(false, true);
     }
@@ -324,12 +327,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     }
 
     /**
-     * Handler for non timestamped item.
-     *
-     * @return true if handling was done, false otherwise
+     * Flushes the cache state map to the actual snapshot state IMap
+     * @return true if async operation started, false otherwise
      */
-    private boolean handleNonTimestamped() {
-        // If it is not TimestampedItem it is most likely a watermark
+    @CheckReturnValue
+    private boolean flushStateMap() {
         if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
             // If batch enabled this is where we put it to the state map, clear the temp map afterwards
             int amountInTempState = tempStateMap.size();
@@ -357,8 +359,17 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             numActiveFlushes.incrementAndGet();
         }
         // We are done as batch setAllAsync has started
-        // (and if batch is disabled no need to do anything with watermark anyway)
         return true;
+    }
+
+    /**
+     * Handler for non timestamped item.
+     *
+     * @return true if handling was done, false otherwise
+     */
+    private boolean handleNonTimestamped() {
+        // If it is not TimestampedItem it is most likely a watermark
+        return flushStateMap();
     }
 
     @CheckReturnValue
@@ -383,9 +394,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                     // Return no progress if we didn't get the lock
                     return false;
                 }
-                logger.info("Acquired lock at put to temp");
                 tempStateMap.put(ssKey, value);
-                logger.info("Releasing lock from put to temp");
                 unlockStateMap();
             } else {
                 if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
@@ -442,6 +451,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             if (!flushPartition(i)) {
                 return false;
             }
+        }
+
+        // Flush state map (if batch is enabled)
+        if (!flushStateMap()) {
+            return false;
         }
 
         // we're done
