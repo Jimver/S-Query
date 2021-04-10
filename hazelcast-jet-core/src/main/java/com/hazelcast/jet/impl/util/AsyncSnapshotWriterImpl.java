@@ -369,7 +369,10 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
      */
     private boolean handleNonTimestamped() {
         // If it is not TimestampedItem it is most likely a watermark
-        return flushStateMap();
+        if (IMapStateHelper.isBatchPhaseStateWatermarkEnabled(jetService.getConfig())) {
+            return flushStateMap();
+        }
+        return true;
     }
 
     @CheckReturnValue

@@ -33,6 +33,8 @@ public final class IMapStateHelper {
             = new HazelcastProperty("state.live", false);
     public static final HazelcastProperty PHASE_BATCH
             = new HazelcastProperty("state.phase.batch", false);
+    public static final HazelcastProperty PHASE_BATCH_WATERMARK
+            = new HazelcastProperty("state.phase.batch.watermark", false);
     public static final HazelcastProperty WAIT_FOR_FUTURES
             = new HazelcastProperty("wait.for.futures", false);
     public static final HazelcastProperty BLOB_STATE
@@ -43,6 +45,7 @@ public final class IMapStateHelper {
     private static boolean phaseStateEnabled; // Toggle for phase (2) snapshot state
     private static boolean liveStateEnabled; // Toggle for live state
     private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
+    private static boolean phaseStateBatchWatermarkEnabled; // Toggle for batched phase state on watermark
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
     private static boolean blobStateEnabled; // Toggle for serialized blob state
 
@@ -51,6 +54,7 @@ public final class IMapStateHelper {
     private static boolean phaseStateEnabledCached;
     private static boolean liveStateEnabledCached;
     private static boolean phaseStateBatchEnabledCached;
+    private static boolean phaseStateBatchWatermarkEnabledCached;
     private static boolean waitForFuturesEnabledCached;
     private static boolean blobStateEnabledCached;
 
@@ -102,6 +106,14 @@ public final class IMapStateHelper {
             phaseStateBatchEnabledCached = true;
         }
         return phaseStateBatchEnabled;
+    }
+
+    public static boolean isBatchPhaseStateWatermarkEnabled(JetConfig config) {
+        if (!phaseStateBatchWatermarkEnabledCached) {
+            phaseStateBatchWatermarkEnabled = getBool(config, PHASE_BATCH);
+            phaseStateBatchWatermarkEnabledCached = true;
+        }
+        return phaseStateBatchWatermarkEnabled;
     }
 
     public static boolean isWaitForFuturesEnabled(JetConfig config) {
