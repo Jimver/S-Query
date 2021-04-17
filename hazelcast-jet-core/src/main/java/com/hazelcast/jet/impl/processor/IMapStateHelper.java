@@ -31,6 +31,8 @@ public final class IMapStateHelper {
             = new HazelcastProperty("state.phase", false);
     public static final HazelcastProperty LIVE_STATE
             = new HazelcastProperty("state.live", false);
+    public static final HazelcastProperty LIVE_STATE_ASYNC
+            = new HazelcastProperty("state.live.async", false);
     public static final HazelcastProperty PHASE_BATCH
             = new HazelcastProperty("state.phase.batch", false);
     public static final HazelcastProperty PHASE_BATCH_WATERMARK
@@ -44,6 +46,7 @@ public final class IMapStateHelper {
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
     private static boolean phaseStateEnabled; // Toggle for phase (2) snapshot state
     private static boolean liveStateEnabled; // Toggle for live state
+    private static boolean liveStateAsync; // Toggle for live state async
     private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
     private static boolean phaseStateBatchWatermarkEnabled; // Toggle for batched phase state on watermark
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
@@ -53,6 +56,7 @@ public final class IMapStateHelper {
     private static boolean snapshotStateEnabledCached;
     private static boolean phaseStateEnabledCached;
     private static boolean liveStateEnabledCached;
+    private static boolean liveStateAsyncCached;
     private static boolean phaseStateBatchEnabledCached;
     private static boolean phaseStateBatchWatermarkEnabledCached;
     private static boolean waitForFuturesEnabledCached;
@@ -98,6 +102,14 @@ public final class IMapStateHelper {
             liveStateEnabledCached = true;
         }
         return liveStateEnabled;
+    }
+
+    public static boolean isLiveStateAsync(JetConfig config) {
+        if (!liveStateAsyncCached) {
+            liveStateAsync = getBool(config, LIVE_STATE_ASYNC);
+            liveStateAsyncCached = true;
+        }
+        return liveStateAsync;
     }
 
     public static boolean isBatchPhaseStateEnabled(JetConfig config) {

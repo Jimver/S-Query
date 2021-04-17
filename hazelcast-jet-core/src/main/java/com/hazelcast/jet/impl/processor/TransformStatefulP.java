@@ -324,7 +324,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         S state = tsAndState.item();
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
         if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
-            keyToStateIMap.set(key, state); // Put to live state IMap
+            if (IMapStateHelper.isLiveStateAsync(jetConfig)) {
+                keyToStateIMap.setAsync(key, state); // Put to live state IMap
+            } else {
+                keyToStateIMap.set(key, state); // Put to live state IMap
+            }
         }
         if (IMapStateHelper.isSnapshotStateEnabled(jetConfig)) {
             processSnapshotItem(key, state, snapshotId, SnapshotQueueItem.Operation.PUT); // Put state to snapshot IMap
