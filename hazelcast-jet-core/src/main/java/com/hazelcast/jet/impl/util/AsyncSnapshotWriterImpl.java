@@ -16,6 +16,8 @@
 
 package com.hazelcast.jet.impl.util;
 
+import com.hazelcast.config.InMemoryFormat;
+import com.hazelcast.config.MapConfig;
 import com.hazelcast.core.HazelcastInstanceNotActiveException;
 import com.hazelcast.internal.nio.Bits;
 import com.hazelcast.internal.partition.IPartitionService;
@@ -430,6 +432,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private boolean initStateMap() {
         if (stateMap == null) {
             String mapName = IMapStateHelper.getPhaseSnapshotMapName(vertexName);
+            MapConfig mapConfig = new MapConfig(mapName);
+            nodeEngine.getHazelcastInstance().getConfig().addMapConfig(mapConfig);
+            if (IMapStateHelper.isMemoryFormatObject(jetService.getConfig())) {
+                mapConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+            }
             stateMap = nodeEngine.getHazelcastInstance().getMap(mapName);
             this.currentSnapshotId = snapshotContext.currentSnapshotId();
         }

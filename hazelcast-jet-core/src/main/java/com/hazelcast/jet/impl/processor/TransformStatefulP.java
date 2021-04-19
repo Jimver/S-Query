@@ -195,15 +195,17 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
      * @param mapName Name of the IMap
      * @return The MapConfig with the correct name
      */
-    public static MapConfig getMapConfig(String mapName) {
-        final MapConfig[] mapConfig = {new MapConfig()
+    public MapConfig getMapConfig(String mapName) {
+        MapConfig mapConfig = new MapConfig()
                 .setName(mapName)
                 .setBackupCount(0)
                 .setAsyncBackupCount(0)
-                .setInMemoryFormat(InMemoryFormat.BINARY)
                 .setStatisticsEnabled(false)
-                .setReadBackupData(false)};
-        return mapConfig[0];
+                .setReadBackupData(false);
+        if (IMapStateHelper.isMemoryFormatObject(jetConfig)) {
+            mapConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+        }
+        return mapConfig;
     }
 
     @Override

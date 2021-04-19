@@ -41,6 +41,8 @@ public final class IMapStateHelper {
             = new HazelcastProperty("wait.for.futures", false);
     public static final HazelcastProperty BLOB_STATE
             = new HazelcastProperty("state.blob", true);
+    public static final HazelcastProperty MEMORY_FORMAT_OBJECT
+            = new HazelcastProperty("memory.format.object", false);
 
     // Booleans which control if IMap state is used or not
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
@@ -51,6 +53,7 @@ public final class IMapStateHelper {
     private static boolean phaseStateBatchWatermarkEnabled; // Toggle for batched phase state on watermark
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
     private static boolean blobStateEnabled; // Toggle for serialized blob state
+    private static boolean memoryFormatObject; // Toggle for IMap memory object format, false = BINARY
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -61,6 +64,7 @@ public final class IMapStateHelper {
     private static boolean phaseStateBatchWatermarkEnabledCached;
     private static boolean waitForFuturesEnabledCached;
     private static boolean blobStateEnabledCached;
+    private static boolean memoryFormatObjectCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -142,6 +146,14 @@ public final class IMapStateHelper {
             blobStateEnabledCached = true;
         }
         return blobStateEnabled;
+    }
+
+    public static boolean isMemoryFormatObject(JetConfig config) {
+        if (!memoryFormatObjectCached) {
+            memoryFormatObject = getBool(config, MEMORY_FORMAT_OBJECT);
+            memoryFormatObjectCached = true;
+        }
+        return memoryFormatObject;
     }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
