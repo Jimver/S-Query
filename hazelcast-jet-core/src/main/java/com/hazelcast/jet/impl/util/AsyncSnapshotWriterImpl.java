@@ -43,11 +43,11 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteOrder;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -90,9 +90,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private long totalPayloadBytes;
 
     // Temporary state map
-    private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
+    private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new ConcurrentHashMap<>();
     // Lock for above temp state map
     private AtomicReference<Boolean> tempStateMapLock = new AtomicReference<>(false);
+    // Semaphore for above temp state map
+    private AtomicInteger tempStateMapSemaphore = new AtomicInteger(0);
 
     private BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
 
@@ -311,12 +313,39 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     /**
      * Helper for locking the temp state map lock.
+     * This method return false if temporary state map semaphore is greater than 0.
+     * Because then something is still being put to the temp state map.
      *
      * @return true if we got the lock, false otherwise
      */
     @CheckReturnValue
     private boolean lockStateMap() {
-        return tempStateMapLock.compareAndSet(false, true);
+        int semaphore = tempStateMapSemaphore.get();
+        if (semaphore == 0) {
+            return tempStateMapLock.compareAndSet(false, true);
+        } else {
+            logger.info(String.format("Semaphore for temp state map is: %d", semaphore));
+            return false;
+        }
+    }
+
+    /**
+     * Helper for incrementing the temp state map semaphore.
+     * This method will return false if temp state map is locked.
+     *
+     * @return True if semaphore was incremented, false otherwise.
+     */
+    private boolean incStateMapSemaphore() {
+        if (Boolean.TRUE.equals(tempStateMapLock.get())) {
+            return false;
+        } else {
+            tempStateMapSemaphore.incrementAndGet();
+            return true;
+        }
+    }
+
+    private void decStateMapSemaphore() {
+        tempStateMapSemaphore.decrementAndGet();
     }
 
     /**
@@ -391,14 +420,14 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
             if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
                 // If batch mode, put to internal map
-                boolean gotLock = lockStateMap();
-                if (!gotLock) {
-                    logger.info("Couldn't get lock for put to temp");
+                boolean incSemaphore = incStateMapSemaphore();
+                if (!incSemaphore) {
+                    logger.info("Couldn't increase semaphore at put to temp");
                     // Return no progress if we didn't get the lock
                     return false;
                 }
                 tempStateMap.put(ssKey, value);
-                unlockStateMap();
+                decStateMapSemaphore();
             } else {
                 if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
                     logger.info("Couldn't get async op for setAsync");
