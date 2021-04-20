@@ -347,15 +347,15 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             }
             boolean gotLock = lockStateMap();
             if (!gotLock) {
-                logger.info("Couldn't get lock for setAllAsync");
+                logger.fine("Couldn't get lock for setAllAsync");
                 // Return no progress if we didn't get the lock
                 return false;
             }
-            logger.info(String.format("Putting %d items to phase state map", amountInTempState));
+            logger.fine(String.format("Putting %d items to phase state map", amountInTempState));
             stateMap.setAllAsync(tempStateMap)
                     .thenRun(() -> {
                         tempStateMap.clear();
-                        logger.info("Releasing lock from setAllAsync");
+                        logger.fine("Releasing lock from setAllAsync");
                         unlockStateMap();
                     }).toCompletableFuture().whenComplete(putResponseConsumer);
             numActiveFlushes.incrementAndGet();
@@ -395,7 +395,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 // If batch mode, put to internal map
                 boolean gotLock = lockStateMap();
                 if (!gotLock) {
-                    logger.info("Couldn't get lock for put to temp");
+                    logger.fine("Couldn't get lock for put to temp");
                     // Return no progress if we didn't get the lock
                     return false;
                 }
@@ -403,7 +403,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 unlockStateMap();
             } else {
                 if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
-                    logger.info("Couldn't get async op for setAsync");
+                    logger.fine("Couldn't get async op for setAsync");
                     return false;
                 }
                 // Otherwise put to state map immediately
