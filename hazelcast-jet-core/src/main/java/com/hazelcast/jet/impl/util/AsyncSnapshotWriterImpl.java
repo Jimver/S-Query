@@ -341,14 +341,14 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 // Nothing in temp state map so we are done
                 return true;
             }
-            if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
-                logger.info("Couldn't get async op for setAllAsync");
-                return false;
-            }
             boolean gotLock = lockStateMap();
             if (!gotLock) {
                 logger.fine("Couldn't get lock for setAllAsync");
                 // Return no progress if we didn't get the lock
+                return false;
+            }
+            if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
+                logger.info("Couldn't get async op for setAllAsync");
                 return false;
             }
             logger.fine(String.format("Putting %d items to phase state map", amountInTempState));
