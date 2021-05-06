@@ -423,6 +423,13 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             if (mapName == null) {
                 return false;
             }
+            if (!nodeEngine.getHazelcastInstance().getConfig().getMapConfigs().containsKey(mapName)) {
+                MapConfig mapConfig = new MapConfig(mapName);
+                nodeEngine.getHazelcastInstance().getConfig().addMapConfig(mapConfig);
+                if (IMapStateHelper.isMemoryFormatObject(jetService.getConfig())) {
+                    mapConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+                }
+            }
             currentMap = nodeEngine.getHazelcastInstance().getMap(mapName);
             this.currentSnapshotId = snapshotContext.currentSnapshotId();
         }
