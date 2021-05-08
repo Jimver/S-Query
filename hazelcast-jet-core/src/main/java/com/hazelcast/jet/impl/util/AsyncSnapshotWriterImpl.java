@@ -50,6 +50,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -69,34 +70,31 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private final CustomByteArrayOutputStream[] buffers;
     private final int[] partitionKeys;
     private final JetService jetService;
-    private int partitionSequence;
     private final ILogger logger;
     private final NodeEngine nodeEngine;
     private final boolean useBigEndian;
     private final SnapshotContext snapshotContext;
     private final String vertexName;
     private final int memberCount;
-    private IMap<SnapshotDataKey, Object> currentMap;
-    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
-    private long currentSnapshotId;
     private final AtomicReference<Throwable> firstError = new AtomicReference<>();
     private final AtomicInteger numActiveFlushes = new AtomicInteger();
     private final SerializationService serializationService;
-
+    // Temporary state map
+    private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
+    private final Map<SnapshotIMapKey<Object>, Object> tempStateMapConc = new ConcurrentHashMap<>();
     // Varialbe to keep track if put to state map is done in offer()
-    private AtomicReference<Boolean> putAsyncStateDone = new AtomicReference<>(false);
-
+    private final AtomicReference<Boolean> putAsyncStateDone = new AtomicReference<>(false);
+    // Lock for above temp state map
+    private final AtomicReference<Boolean> tempStateMapLock = new AtomicReference<>(false);
+    private final BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
+    private int partitionSequence;
+    private IMap<SnapshotDataKey, Object> currentMap;
+    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
+    private long currentSnapshotId;
     // stats
     private long totalKeys;
     private long totalChunks;
     private long totalPayloadBytes;
-
-    // Temporary state map
-    private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
-    // Lock for above temp state map
-    private AtomicReference<Boolean> tempStateMapLock = new AtomicReference<>(false);
-
-    private BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
 
     public AsyncSnapshotWriterImpl(NodeEngine nodeEngine,
                                    SnapshotContext snapshotContext,
@@ -143,6 +141,19 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         checkChunkCapacity(chunkSize);
     }
 
+    private static CustomByteArrayOutputStream[] createAndInitBuffers(
+            int chunkSize,
+            int partitionCount,
+            byte[] serializedByteArrayHeader
+    ) {
+        CustomByteArrayOutputStream[] buffers = new CustomByteArrayOutputStream[partitionCount];
+        for (int i = 0; i < buffers.length; i++) {
+            buffers[i] = new CustomByteArrayOutputStream(chunkSize);
+            buffers[i].write(serializedByteArrayHeader, 0, serializedByteArrayHeader.length);
+        }
+        return buffers;
+    }
+
     private boolean isBigEndian() {
         boolean bigEndian = !nodeEngine.getHazelcastInstance().getConfig().getSerializationConfig().isUseNativeByteOrder()
                 || ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN;
@@ -155,19 +166,6 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         if (usableChunkCapacity <= 0) {
             throw new IllegalArgumentException("too small chunk size: " + chunkSize);
         }
-    }
-
-    private static CustomByteArrayOutputStream[] createAndInitBuffers(
-            int chunkSize,
-            int partitionCount,
-            byte[] serializedByteArrayHeader
-    ) {
-        CustomByteArrayOutputStream[] buffers = new CustomByteArrayOutputStream[partitionCount];
-        for (int i = 0; i < buffers.length; i++) {
-            buffers[i] = new CustomByteArrayOutputStream(chunkSize);
-            buffers[i].write(serializedByteArrayHeader, 0, serializedByteArrayHeader.length);
-        }
-        return buffers;
     }
 
     private void consumePutResponse(Object response, Throwable throwable) {
@@ -330,33 +328,45 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     /**
      * Flushes the cache state map to the actual snapshot state IMap
+     *
      * @return true if async operation started, false otherwise
      */
     @CheckReturnValue
     private boolean flushStateMap() {
         if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
             // If batch enabled this is where we put it to the state map, clear the temp map afterwards
-            int amountInTempState = tempStateMap.size();
+            int amountInTempState =
+                    IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
+                            tempStateMapConc.size() :
+                            tempStateMap.size();
             if (amountInTempState == 0) {
                 // Nothing in temp state map so we are done
                 return true;
             }
-            boolean gotLock = lockStateMap();
-            if (!gotLock) {
-                logger.fine("Couldn't get lock for setAllAsync");
-                // Return no progress if we didn't get the lock
-                return false;
+            if (!IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
+                boolean gotLock = lockStateMap();
+                if (!gotLock) {
+                    logger.fine("Couldn't get lock for setAllAsync");
+                    // Return no progress if we didn't get the lock
+                    return false;
+                }
             }
             if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
                 logger.info("Couldn't get async op for setAllAsync");
                 return false;
             }
             logger.fine(String.format("Putting %d items to phase state map", amountInTempState));
-            stateMap.setAllAsync(tempStateMap)
+            stateMap.setAllAsync(IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
+                    tempStateMapConc :
+                    tempStateMap)
                     .thenRun(() -> {
-                        tempStateMap.clear();
-                        logger.fine("Releasing lock from setAllAsync");
-                        unlockStateMap();
+                        if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
+                            tempStateMapConc.clear();
+                        } else {
+                            tempStateMap.clear();
+                            logger.fine("Releasing lock from setAllAsync");
+                            unlockStateMap();
+                        }
                     }).toCompletableFuture().whenComplete(putResponseConsumer);
             numActiveFlushes.incrementAndGet();
         }
@@ -392,15 +402,19 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             currentSnapshotId = snapshotContext.currentSnapshotId();
             SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
             if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
-                // If batch mode, put to internal map
-                boolean gotLock = lockStateMap();
-                if (!gotLock) {
-                    logger.fine("Couldn't get lock for put to temp");
-                    // Return no progress if we didn't get the lock
-                    return false;
+                if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
+                    tempStateMapConc.put(ssKey, value);
+                } else {
+                    // If batch mode, put to internal map
+                    boolean gotLock = lockStateMap();
+                    if (!gotLock) {
+                        logger.fine("Couldn't get lock for put to temp");
+                        // Return no progress if we didn't get the lock
+                        return false;
+                    }
+                    tempStateMap.put(ssKey, value);
+                    unlockStateMap();
                 }
-                tempStateMap.put(ssKey, value);
-                unlockStateMap();
             } else {
                 if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
                     logger.fine("Couldn't get async op for setAsync");
@@ -506,6 +520,21 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     int partitionKey(int partitionId) {
         return partitionKeys[partitionId];
+    }
+
+    @Override
+    public long getTotalPayloadBytes() {
+        return totalPayloadBytes;
+    }
+
+    @Override
+    public long getTotalKeys() {
+        return totalKeys;
+    }
+
+    @Override
+    public long getTotalChunks() {
+        return totalChunks;
     }
 
     public static final class SnapshotDataKey implements IdentifiedDataSerializable, PartitionAware {
@@ -627,10 +656,9 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     static class CustomByteArrayOutputStream extends OutputStream {
 
         private static final byte[] EMPTY_BYTE_ARRAY = {};
-
+        private final int capacityLimit;
         private byte[] data;
         private int size;
-        private int capacityLimit;
 
         CustomByteArrayOutputStream(int capacityLimit) {
             this.capacityLimit = capacityLimit;
@@ -680,20 +708,5 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         int size() {
             return size;
         }
-    }
-
-    @Override
-    public long getTotalPayloadBytes() {
-        return totalPayloadBytes;
-    }
-
-    @Override
-    public long getTotalKeys() {
-        return totalKeys;
-    }
-
-    @Override
-    public long getTotalChunks() {
-        return totalChunks;
     }
 }

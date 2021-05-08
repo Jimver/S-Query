@@ -37,6 +37,8 @@ public final class IMapStateHelper {
             = new HazelcastProperty("state.phase.batch", false);
     public static final HazelcastProperty PHASE_BATCH_WATERMARK
             = new HazelcastProperty("state.phase.batch.watermark", false);
+    public static final HazelcastProperty PHASE_BATCH_CONCURRENT
+            = new HazelcastProperty("state.phase.batch.concurrent", false);
     public static final HazelcastProperty WAIT_FOR_FUTURES
             = new HazelcastProperty("wait.for.futures", false);
     public static final HazelcastProperty BLOB_STATE
@@ -51,6 +53,7 @@ public final class IMapStateHelper {
     private static boolean liveStateAsync; // Toggle for live state async
     private static boolean phaseStateBatchEnabled; // Toggle for batched phase state
     private static boolean phaseStateBatchWatermarkEnabled; // Toggle for batched phase state on watermark
+    private static boolean phaseStateBatchConcurrentEnabled; // Toggle for batched phase state in concurrent hashmap
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
     private static boolean blobStateEnabled; // Toggle for serialized blob state
     private static boolean memoryFormatObject; // Toggle for IMap memory object format, false = BINARY
@@ -62,6 +65,7 @@ public final class IMapStateHelper {
     private static boolean liveStateAsyncCached;
     private static boolean phaseStateBatchEnabledCached;
     private static boolean phaseStateBatchWatermarkEnabledCached;
+    private static boolean phaseStateBatchConcurrentEnabledCached;
     private static boolean waitForFuturesEnabledCached;
     private static boolean blobStateEnabledCached;
     private static boolean memoryFormatObjectCached;
@@ -126,8 +130,16 @@ public final class IMapStateHelper {
 
     public static boolean isBatchPhaseStateWatermarkEnabled(JetConfig config) {
         if (!phaseStateBatchWatermarkEnabledCached) {
-            phaseStateBatchWatermarkEnabled = getBool(config, PHASE_BATCH);
+            phaseStateBatchWatermarkEnabled = getBool(config, PHASE_BATCH_WATERMARK);
             phaseStateBatchWatermarkEnabledCached = true;
+        }
+        return phaseStateBatchWatermarkEnabled;
+    }
+
+    public static boolean isBatchPhaseConcurrentEnabled(JetConfig config) {
+        if (!phaseStateBatchWatermarkEnabledCached) {
+            phaseStateBatchConcurrentEnabled = getBool(config, PHASE_BATCH_CONCURRENT);
+            phaseStateBatchConcurrentEnabledCached = true;
         }
         return phaseStateBatchWatermarkEnabled;
     }
