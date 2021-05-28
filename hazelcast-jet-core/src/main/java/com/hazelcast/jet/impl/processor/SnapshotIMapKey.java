@@ -16,6 +16,9 @@
 
 package com.hazelcast.jet.impl.processor;
 
+import com.hazelcast.internal.nio.Bits;
+import com.hazelcast.internal.serialization.Data;
+import com.hazelcast.internal.serialization.impl.HeapData;
 import com.hazelcast.jet.impl.execution.init.JetInitDataSerializerHook;
 import com.hazelcast.nio.ObjectDataInput;
 import com.hazelcast.nio.ObjectDataOutput;
@@ -24,6 +27,10 @@ import com.hazelcast.partition.PartitionAware;
 
 import java.io.IOException;
 import java.util.Objects;
+
+import static com.hazelcast.internal.serialization.impl.HeapData.HEAP_DATA_OVERHEAD;
+import static com.hazelcast.internal.serialization.impl.HeapData.TYPE_OFFSET;
+import static com.hazelcast.internal.serialization.impl.SerializationConstants.CONSTANT_TYPE_DATA_SERIALIZABLE;
 
 public final class SnapshotIMapKey<K> implements IdentifiedDataSerializable, PartitionAware<K> {
     private K key;
@@ -39,6 +46,31 @@ public final class SnapshotIMapKey<K> implements IdentifiedDataSerializable, Par
     public SnapshotIMapKey(K key, long snapshotId) {
         this.key = key;
         this.snapshotId = snapshotId;
+    }
+
+    public static Data fromData(Data key, long snapshotId) {
+        // Get partition hash
+        int partition = key.getPartitionHash();
+        byte[] array = new byte[
+                HEAP_DATA_OVERHEAD + // Data header
+                        1 + Integer.BYTES + Integer.BYTES + // IdentifiedDataSerializable fields
+                        key.totalSize() - TYPE_OFFSET + // Key Object
+                        Long.BYTES]; // snapshot ID long
+        int pos = 0;
+        Bits.writeInt(array, pos, partition, true); // Partition ID
+        pos += Integer.BYTES;
+        Bits.writeInt(array, pos, CONSTANT_TYPE_DATA_SERIALIZABLE, true); // Type ID of DataSerializable
+        pos += Integer.BYTES;
+        array[pos] = 1; // Set Identified bit
+        pos += 1;
+        Bits.writeInt(array, pos, JetInitDataSerializerHook.FACTORY_ID, true); // Factory ID
+        pos += Integer.BYTES;
+        Bits.writeInt(array, pos, JetInitDataSerializerHook.SNAPSHOTIMAP_KEY, true); // Type ID again
+        pos += Integer.BYTES;
+        System.arraycopy(key.toByteArray(), TYPE_OFFSET, array, pos, key.totalSize() - TYPE_OFFSET);
+        pos += key.totalSize() - TYPE_OFFSET;
+        Bits.writeLong(array, pos, snapshotId, true);
+        return new HeapData(array);
     }
 
     public long getSnapshotId() {

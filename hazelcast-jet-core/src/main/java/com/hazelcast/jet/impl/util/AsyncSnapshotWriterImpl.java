@@ -25,14 +25,16 @@ import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.internal.serialization.SerializationService;
 import com.hazelcast.internal.serialization.impl.HeapData;
 import com.hazelcast.internal.serialization.impl.SerializationConstants;
-import com.hazelcast.jet.datamodel.TimestampedItem;
 import com.hazelcast.jet.impl.JetService;
 import com.hazelcast.jet.impl.execution.SnapshotContext;
 import com.hazelcast.jet.impl.execution.init.JetInitDataSerializerHook;
 import com.hazelcast.jet.impl.processor.IMapStateHelper;
 import com.hazelcast.jet.impl.processor.SnapshotIMapKey;
+import com.hazelcast.jet.impl.serialization.SerializerHookConstants;
 import com.hazelcast.logging.ILogger;
 import com.hazelcast.map.IMap;
+import com.hazelcast.map.impl.MapEntries;
+import com.hazelcast.map.impl.proxy.MapProxyImpl;
 import com.hazelcast.nio.ObjectDataInput;
 import com.hazelcast.nio.ObjectDataOutput;
 import com.hazelcast.nio.serialization.IdentifiedDataSerializable;
@@ -59,6 +61,7 @@ import java.util.function.Supplier;
 public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     public static final int DEFAULT_CHUNK_SIZE = 128 * 1024;
+    private static final int MAP_SIZE = 1000; // For initial MapEntries array size
 
     final int usableChunkCapacity; // this includes the serialization header for byte[], but not the terminator
     final byte[] serializedByteArrayHeader = new byte[3 * Bits.INT_SIZE_IN_BYTES];
@@ -80,16 +83,20 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private final AtomicInteger numActiveFlushes = new AtomicInteger();
     private final SerializationService serializationService;
     // Temporary state map
-    private final Map<SnapshotIMapKey<Object>, Object> tempStateMap = new HashMap<>();
-    private final Map<SnapshotIMapKey<Object>, Object> tempStateMapConc = new ConcurrentHashMap<>();
+//    private final Map<SnapshotIMapKey<Object>, Data> tempStateMap = new HashMap<>();
+//    private final Map<SnapshotIMapKey<Object>, Data> tempStateMapConc = new ConcurrentHashMap<>();
+    private final Map<Data, Data> tempStateMap = new HashMap<>();
+    private final Map<Data, Data> tempStateMapConc = new ConcurrentHashMap<>();
     // Varialbe to keep track if put to state map is done in offer()
     private final AtomicReference<Boolean> putAsyncStateDone = new AtomicReference<>(false);
     // Lock for above temp state map
     private final AtomicReference<Boolean> tempStateMapLock = new AtomicReference<>(false);
     private final BiConsumer<Object, Throwable> putResponseConsumer = this::consumePutResponse;
+    private MapEntries[] tempEntries;
     private int partitionSequence;
     private IMap<SnapshotDataKey, Object> currentMap;
-    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
+    //    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
+    private IMap<Object, Object> stateMap;
     private long currentSnapshotId;
     // stats
     private long totalKeys;
@@ -335,10 +342,16 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private boolean flushStateMap() {
         if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
             // If batch enabled this is where we put it to the state map, clear the temp map afterwards
-            int amountInTempState =
-                    IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
-                            tempStateMapConc.size() :
-                            tempStateMap.size();
+            int amountInTempState = 0;
+            if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
+                amountInTempState = tempStateMapConc.size();
+            } else if (!IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
+                amountInTempState = tempStateMap.size();
+            } else {
+                for (MapEntries e : tempEntries) {
+                    amountInTempState += e.size();
+                }
+            }
             if (amountInTempState == 0) {
                 // Nothing in temp state map so we are done
                 return true;
@@ -346,7 +359,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             if (!IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
                 boolean gotLock = lockStateMap();
                 if (!gotLock) {
-                    logger.fine("Couldn't get lock for setAllAsync");
+                    logger.fine("Couldn't get lock for setAllAsync/setEntriesAsync");
                     // Return no progress if we didn't get the lock
                     return false;
                 }
@@ -355,19 +368,37 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 logger.info("Couldn't get async op for setAllAsync");
                 return false;
             }
+
             logger.fine(String.format("Putting %d items to phase state map", amountInTempState));
-            stateMap.setAllAsync(IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
-                    tempStateMapConc :
-                    tempStateMap)
-                    .thenRun(() -> {
-                        if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
-                            tempStateMapConc.clear();
-                        } else {
-                            tempStateMap.clear();
-                            logger.fine("Releasing lock from setAllAsync");
+            long beforeSetAll = System.nanoTime();
+            if (!IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
+                stateMap.setAllAsync(IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
+                        tempStateMapConc :
+                        tempStateMap)
+                        .thenRun(() -> {
+                            if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
+                                tempStateMapConc.clear();
+                            } else {
+                                tempStateMap.clear();
+                                logger.fine("Releasing lock from setAllAsync");
+                                unlockStateMap();
+                            }
+                            long afterSetAll = System.nanoTime();
+                            if (IMapStateHelper.isLiveStateAsync(jetService.getConfig())) {
+                                logger.info(String.format("setAllAsync took: %d", afterSetAll - beforeSetAll));
+                            }
+                        }).toCompletableFuture().whenComplete(putResponseConsumer);
+            } else {
+                ((MapProxyImpl<Object, Object>) stateMap).setEntriesAsync(tempEntries)
+                        .thenRun(() -> {
+                            initTempEntries();
                             unlockStateMap();
-                        }
-                    }).toCompletableFuture().whenComplete(putResponseConsumer);
+                            long afterSetAll = System.nanoTime();
+                            if (IMapStateHelper.isLiveStateAsync(jetService.getConfig())) {
+                                logger.info(String.format("setEntriesAsync took: %d", afterSetAll - beforeSetAll));
+                            }
+                        }).toCompletableFuture().whenComplete(putResponseConsumer);
+            }
             numActiveFlushes.incrementAndGet();
         }
         // We are done as batch setAllAsync has started
@@ -392,19 +423,31 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         if (!initStateMap()) {
             return false;
         }
+        if (!initTempEntries()) {
+            return false;
+        }
         try {
-            Object valueObject = serializationService.toObject(entry.getValue());
-            if (!(valueObject instanceof TimestampedItem)) {
+            if (entry.getValue().getType() != SerializerHookConstants.TIMESTAMPED_ITEM) {
                 return handleNonTimestamped();
             }
-            Object value = ((TimestampedItem<?>) valueObject).item();
-            Object key = serializationService.toObject(entry.getKey());
+            int partitionId = partitionService.getPartitionId(entry.getKey());
+            // Serialized form of item inside the TimestampedItem
+            byte[] array = new byte[entry.getValue().totalSize() - Long.BYTES];
+            Bits.writeInt(array, 0, partitionKey(partitionId), true);
+            System.arraycopy(entry.getValue().toByteArray(),
+                    HeapData.HEAP_DATA_OVERHEAD + Long.BYTES,
+                    array,
+                    Integer.BYTES,
+                    entry.getValue().totalSize() - HeapData.HEAP_DATA_OVERHEAD - Long.BYTES);
+            Data valueItemData = new HeapData(array); // Data form of item inside TimestampedItem
+//            Object key = serializationService.toObject(entry.getKey());
             currentSnapshotId = snapshotContext.currentSnapshotId();
-            SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
+//            SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
+            Data dataFromKey = SnapshotIMapKey.fromData(entry.getKey(), currentSnapshotId);
             if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
                 if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
-                    tempStateMapConc.put(ssKey, value);
-                } else {
+                    tempStateMapConc.put(dataFromKey, valueItemData);
+                } else if (!IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
                     // If batch mode, put to internal map
                     boolean gotLock = lockStateMap();
                     if (!gotLock) {
@@ -412,7 +455,15 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                         // Return no progress if we didn't get the lock
                         return false;
                     }
-                    tempStateMap.put(ssKey, value);
+                    tempStateMap.put(dataFromKey, valueItemData);
+                    unlockStateMap();
+                } else {
+                    if (!lockStateMap()) {
+                        logger.fine("Couldn't get lock for add to entries");
+                        // Return no progress as we didn't get the lock
+                        return false;
+                    }
+                    tempEntries[partitionId].add(dataFromKey, valueItemData);
                     unlockStateMap();
                 }
             } else {
@@ -421,7 +472,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                     return false;
                 }
                 // Otherwise put to state map immediately
-                stateMap.setAsync(ssKey, value)
+                stateMap.setAsync(dataFromKey, valueItemData)
                         .toCompletableFuture().whenComplete(putResponseConsumer);
                 numActiveFlushes.incrementAndGet();
             }
@@ -465,6 +516,28 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     }
 
     /**
+     * Must be called AFTER initStateMap().
+     * @return True if initialized, false otherwise
+     */
+    private boolean initTempEntries() {
+        // Fast snapshot mode using setEntries()
+        if (tempEntries == null) {
+            int partitionCount = partitionService.getPartitionCount();
+            tempEntries = new MapEntries[partitionCount];
+        }
+        for (int i = 0; i < tempEntries.length; i++) {
+            MapEntries entries = tempEntries[i];
+            if (entries == null) {
+                int initialSize = ((MapProxyImpl<Object, Object>) stateMap)
+                        .getPutAllInitialSize(false, MAP_SIZE, tempEntries.length);
+                entries = new MapEntries(initialSize);
+                tempEntries[i] = entries;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Flush all partitions and reset current map. No further items can be
      * offered until new snapshot is seen in {@link #snapshotContext}.
      *
@@ -484,7 +557,15 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             }
         }
 
-        // Flush state map (if batch is enabled)
+        if (!initStateMap()) {
+            return false;
+        }
+
+        if (!initTempEntries()) {
+            return false;
+        }
+
+        // Flush state map
         if (!flushStateMap()) {
             return false;
         }

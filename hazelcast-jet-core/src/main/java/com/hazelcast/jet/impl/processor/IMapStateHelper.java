@@ -45,6 +45,8 @@ public final class IMapStateHelper {
             = new HazelcastProperty("state.blob", true);
     public static final HazelcastProperty MEMORY_FORMAT_OBJECT
             = new HazelcastProperty("memory.format.object", false);
+    public static final HazelcastProperty FAST_SNAPSHOT
+            = new HazelcastProperty("state.phase.setentries", false);
 
     // Booleans which control if IMap state is used or not
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
@@ -57,6 +59,7 @@ public final class IMapStateHelper {
     private static boolean waitForFuturesEnabled; // Toggle for wait for futures
     private static boolean blobStateEnabled; // Toggle for serialized blob state
     private static boolean memoryFormatObject; // Toggle for IMap memory object format, false = BINARY
+    private static boolean fastSnapshot; // Toggle for fast snapshot put method using setEntries()
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -69,6 +72,7 @@ public final class IMapStateHelper {
     private static boolean waitForFuturesEnabledCached;
     private static boolean blobStateEnabledCached;
     private static boolean memoryFormatObjectCached;
+    private static boolean fastSnapshotCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -137,11 +141,11 @@ public final class IMapStateHelper {
     }
 
     public static boolean isBatchPhaseConcurrentEnabled(JetConfig config) {
-        if (!phaseStateBatchWatermarkEnabledCached) {
+        if (!phaseStateBatchConcurrentEnabledCached) {
             phaseStateBatchConcurrentEnabled = getBool(config, PHASE_BATCH_CONCURRENT);
             phaseStateBatchConcurrentEnabledCached = true;
         }
-        return phaseStateBatchWatermarkEnabled;
+        return phaseStateBatchConcurrentEnabled;
     }
 
     public static boolean isWaitForFuturesEnabled(JetConfig config) {
@@ -166,6 +170,14 @@ public final class IMapStateHelper {
             memoryFormatObjectCached = true;
         }
         return memoryFormatObject;
+    }
+
+    public static boolean isFastSnapshotEnabled(JetConfig config) {
+        if (!fastSnapshotCached) {
+            fastSnapshot = getBool(config, FAST_SNAPSHOT);
+            fastSnapshotCached = true;
+        }
+        return fastSnapshot;
     }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
