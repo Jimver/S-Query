@@ -397,12 +397,23 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                             }
                         }).toCompletableFuture().whenComplete(putResponseConsumer);
             } else {
-                // TODO this can be more efficient with only sending modified partitionIDs
                 MapEntries[] setEntries = new MapEntries[tempEntries.length];
+                int[] partitionIds = new int[tempEntries.length];
+                int size = 0;
                 for (int i = 0; i < tempEntries.length; i++) {
-                    setEntries[i] = getAndClearEntries(i).f0();
+                    Tuple2<MapEntries, Integer> entriesAndPartitionId = getAndClearEntries(i);
+                    if (entriesAndPartitionId.f0() == null ||
+                            entriesAndPartitionId.f1() == null ||
+                            entriesAndPartitionId.f0().size() == 0) {
+                        continue;
+                    }
+                    setEntries[size] = entriesAndPartitionId.f0();
+                    partitionIds[size] = entriesAndPartitionId.f1();
+                    size++;
                 }
-                ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap).setEntriesAsync(setEntries)
+                setEntries = Arrays.copyOf(setEntries, size);
+                partitionIds = Arrays.copyOf(partitionIds, size);
+                ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap).setLocalEntriesAsync(partitionIds, setEntries)
                         .thenRun(() -> {
                             initTempEntries();
                             long afterSetAll = System.nanoTime();

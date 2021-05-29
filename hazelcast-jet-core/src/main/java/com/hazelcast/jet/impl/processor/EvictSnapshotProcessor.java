@@ -18,7 +18,6 @@ package com.hazelcast.jet.impl.processor;
 
 import com.hazelcast.map.EntryProcessor;
 
-import java.io.Serializable;
 import java.util.Map;
 
 /**
@@ -33,7 +32,7 @@ import java.util.Map;
  * @param <S> State type
  */
 public class EvictSnapshotProcessor<K, S>
-        implements EntryProcessor<SnapshotIMapKey<K>, S, Boolean>, Serializable {
+        implements EntryProcessor<SnapshotIMapKey<K>, S, Boolean> {
     // Amount of snapshot IDs to keep in the snapshot IMap.
     private static final long AMOUNT_TO_KEEP = 2;
 
@@ -49,8 +48,9 @@ public class EvictSnapshotProcessor<K, S>
 
     @Override
     public Boolean process(Map.Entry<SnapshotIMapKey<K>, S> entry) {
-        // Remove all snapshot entries from AMOUNT_TO_KEEP or more snapshots ago
-        if (entry.getKey().getSnapshotId() <= (snapshotId - AMOUNT_TO_KEEP)) {
+        // Remove all snapshot entries from AMOUNT_TO_KEEP or more snapshots ago and future snapshots (from previous jobs)
+        if (entry.getKey().getSnapshotId() <= (snapshotId - AMOUNT_TO_KEEP) ||
+                entry.getKey().getSnapshotId() >= snapshotId + 1) {
             entry.setValue(null);
         }
         return true;
