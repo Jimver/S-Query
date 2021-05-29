@@ -85,8 +85,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     // Temporary state map
 //    private final Map<SnapshotIMapKey<Object>, Data> tempStateMap = new HashMap<>();
 //    private final Map<SnapshotIMapKey<Object>, Data> tempStateMapConc = new ConcurrentHashMap<>();
-    private final Map<Data, Data> tempStateMap = new HashMap<>();
-    private final Map<Data, Data> tempStateMapConc = new ConcurrentHashMap<>();
+    private final Map<SnapshotIMapKey<Object>, Data> tempStateMap = new HashMap<>();
+    private final Map<SnapshotIMapKey<Object>, Data> tempStateMapConc = new ConcurrentHashMap<>();
     // Varialbe to keep track if put to state map is done in offer()
     private final AtomicReference<Boolean> putAsyncStateDone = new AtomicReference<>(false);
     // Lock for above temp state map
@@ -95,8 +95,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private MapEntries[] tempEntries;
     private int partitionSequence;
     private IMap<SnapshotDataKey, Object> currentMap;
-    //    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
-    private IMap<Object, Object> stateMap;
+    private IMap<SnapshotIMapKey<Object>, Object> stateMap;
+//    private IMap<Object, Object> stateMap;
     private long currentSnapshotId;
     // stats
     private long totalKeys;
@@ -389,7 +389,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                             }
                         }).toCompletableFuture().whenComplete(putResponseConsumer);
             } else {
-                ((MapProxyImpl<Object, Object>) stateMap).setEntriesAsync(tempEntries)
+                ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap).setEntriesAsync(tempEntries)
                         .thenRun(() -> {
                             initTempEntries();
                             unlockStateMap();
@@ -440,14 +440,15 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                     Integer.BYTES,
                     entry.getValue().totalSize() - HeapData.HEAP_DATA_OVERHEAD - Long.BYTES);
             Data valueItemData = new HeapData(array); // Data form of item inside TimestampedItem
-//            Object key = serializationService.toObject(entry.getKey());
             currentSnapshotId = snapshotContext.currentSnapshotId();
-//            SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
-            Data dataFromKey = SnapshotIMapKey.fromData(entry.getKey(), currentSnapshotId);
             if (IMapStateHelper.isBatchPhaseStateEnabled(jetService.getConfig())) {
                 if (IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
-                    tempStateMapConc.put(dataFromKey, valueItemData);
+                    Object key = serializationService.toObject(entry.getKey());
+                    SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
+                    tempStateMapConc.put(ssKey, valueItemData);
                 } else if (!IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
+                    Object key = serializationService.toObject(entry.getKey());
+                    SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
                     // If batch mode, put to internal map
                     boolean gotLock = lockStateMap();
                     if (!gotLock) {
@@ -455,7 +456,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                         // Return no progress if we didn't get the lock
                         return false;
                     }
-                    tempStateMap.put(dataFromKey, valueItemData);
+                    tempStateMap.put(ssKey, valueItemData);
                     unlockStateMap();
                 } else {
                     if (!lockStateMap()) {
@@ -463,7 +464,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                         // Return no progress as we didn't get the lock
                         return false;
                     }
-                    tempEntries[partitionId].add(dataFromKey, valueItemData);
+                    Data ssKey = SnapshotIMapKey.fromData(entry.getKey(), currentSnapshotId);
+                    tempEntries[partitionId].add(ssKey, valueItemData);
                     unlockStateMap();
                 }
             } else {
@@ -471,8 +473,10 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                     logger.fine("Couldn't get async op for setAsync");
                     return false;
                 }
+                Object key = serializationService.toObject(entry.getKey());
+                SnapshotIMapKey<Object> ssKey = new SnapshotIMapKey<>(key, currentSnapshotId);
                 // Otherwise put to state map immediately
-                stateMap.setAsync(dataFromKey, valueItemData)
+                stateMap.setAsync(ssKey, valueItemData)
                         .toCompletableFuture().whenComplete(putResponseConsumer);
                 numActiveFlushes.incrementAndGet();
             }
@@ -528,7 +532,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         for (int i = 0; i < tempEntries.length; i++) {
             MapEntries entries = tempEntries[i];
             if (entries == null) {
-                int initialSize = ((MapProxyImpl<Object, Object>) stateMap)
+                int initialSize = ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap)
                         .getPutAllInitialSize(false, MAP_SIZE, tempEntries.length);
                 entries = new MapEntries(initialSize);
                 tempEntries[i] = entries;
