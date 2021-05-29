@@ -47,6 +47,10 @@ public final class IMapStateHelper {
             = new HazelcastProperty("memory.format.object", false);
     public static final HazelcastProperty FAST_SNAPSHOT
             = new HazelcastProperty("state.phase.setentries", false);
+    private static final HazelcastProperty STATISTICS
+            = new HazelcastProperty("state.phase.statistics", true);
+    private static final HazelcastProperty BACKUP
+            = new HazelcastProperty("state.phase.backup", true);
 
     // Booleans which control if IMap state is used or not
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
@@ -60,6 +64,8 @@ public final class IMapStateHelper {
     private static boolean blobStateEnabled; // Toggle for serialized blob state
     private static boolean memoryFormatObject; // Toggle for IMap memory object format, false = BINARY
     private static boolean fastSnapshot; // Toggle for fast snapshot put method using setEntries()
+    private static boolean staticsEnabled; // Toggle for statistic enabled on snapshot IMap
+    private static boolean isEnableBackup; // Toggle for enabling backup copies for snapshot IMap
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -73,6 +79,8 @@ public final class IMapStateHelper {
     private static boolean blobStateEnabledCached;
     private static boolean memoryFormatObjectCached;
     private static boolean fastSnapshotCached;
+    private static boolean staticsEnabledCached;
+    private static boolean isEnableBackupCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -178,6 +186,22 @@ public final class IMapStateHelper {
             fastSnapshotCached = true;
         }
         return fastSnapshot;
+    }
+
+    public static boolean isStatisticsEnabled(JetConfig config) {
+        if (!staticsEnabledCached) {
+            staticsEnabled = getBool(config, STATISTICS);
+            staticsEnabledCached = true;
+        }
+        return staticsEnabled;
+    }
+
+    public static boolean enableBackup(JetConfig config) {
+        if (!isEnableBackupCached) {
+            isEnableBackup = getBool(config, BACKUP);
+            isEnableBackupCached = true;
+        }
+        return isEnableBackup;
     }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {

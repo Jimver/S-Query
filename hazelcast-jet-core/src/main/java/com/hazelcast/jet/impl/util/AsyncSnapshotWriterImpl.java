@@ -516,6 +516,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             String mapName = IMapStateHelper.getPhaseSnapshotMapName(vertexName);
             MapConfig mapConfig = new MapConfig(mapName);
             nodeEngine.getHazelcastInstance().getConfig().addMapConfig(mapConfig);
+            if (!IMapStateHelper.enableBackup(jetService.getConfig())) {
+                mapConfig.setBackupCount(0);
+                mapConfig.setAsyncBackupCount(0);
+            }
+            mapConfig.setStatisticsEnabled(IMapStateHelper.isStatisticsEnabled(jetService.getConfig()));
             if (IMapStateHelper.isMemoryFormatObject(jetService.getConfig())) {
                 mapConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
             }
