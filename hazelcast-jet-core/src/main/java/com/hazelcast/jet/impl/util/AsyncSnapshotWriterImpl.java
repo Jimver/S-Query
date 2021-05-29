@@ -25,6 +25,7 @@ import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.internal.serialization.SerializationService;
 import com.hazelcast.internal.serialization.impl.HeapData;
 import com.hazelcast.internal.serialization.impl.SerializationConstants;
+import com.hazelcast.jet.datamodel.Tuple2;
 import com.hazelcast.jet.impl.JetService;
 import com.hazelcast.jet.impl.execution.SnapshotContext;
 import com.hazelcast.jet.impl.execution.init.JetInitDataSerializerHook;
@@ -251,6 +252,12 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         return true;
     }
 
+    private Tuple2<MapEntries, Integer> getAndClearEntries(int partitionId) {
+        Tuple2<MapEntries, Integer> pair = Tuple2.tuple2(this.tempEntries[partitionId], partitionId);
+        this.tempEntries[partitionId] = freshEntries();
+        return pair;
+    }
+
     private void copyWithoutHeader(Data src, byte[] dst, int dstOffset) {
         byte[] bytes = src.toByteArray();
         System.arraycopy(bytes, HeapData.TYPE_OFFSET, dst, dstOffset, bytes.length - HeapData.TYPE_OFFSET);
@@ -356,10 +363,11 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 // Nothing in temp state map so we are done
                 return true;
             }
-            if (!IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig())) {
+            if (!IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) &&
+                    !IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
                 boolean gotLock = lockStateMap();
                 if (!gotLock) {
-                    logger.fine("Couldn't get lock for setAllAsync/setEntriesAsync");
+                    logger.fine("Couldn't get lock for setAllAsync");
                     // Return no progress if we didn't get the lock
                     return false;
                 }
@@ -389,10 +397,14 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                             }
                         }).toCompletableFuture().whenComplete(putResponseConsumer);
             } else {
-                ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap).setEntriesAsync(tempEntries)
+                // TODO this can be more efficient with only sending modified partitionIDs
+                MapEntries[] setEntries = new MapEntries[tempEntries.length];
+                for (int i = 0; i < tempEntries.length; i++) {
+                    setEntries[i] = getAndClearEntries(i).f0();
+                }
+                ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap).setEntriesAsync(setEntries)
                         .thenRun(() -> {
                             initTempEntries();
-                            unlockStateMap();
                             long afterSetAll = System.nanoTime();
                             if (IMapStateHelper.isLiveStateAsync(jetService.getConfig())) {
                                 logger.info(String.format("setEntriesAsync took: %d", afterSetAll - beforeSetAll));
@@ -459,14 +471,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                     tempStateMap.put(ssKey, valueItemData);
                     unlockStateMap();
                 } else {
-                    if (!lockStateMap()) {
-                        logger.fine("Couldn't get lock for add to entries");
-                        // Return no progress as we didn't get the lock
-                        return false;
-                    }
                     Data ssKey = SnapshotIMapKey.fromData(entry.getKey(), currentSnapshotId);
                     tempEntries[partitionId].add(ssKey, valueItemData);
-                    unlockStateMap();
                 }
             } else {
                 if (!Util.tryIncrement(numConcurrentAsyncOps, 1, JetService.MAX_PARALLEL_ASYNC_OPS)) {
@@ -532,13 +538,21 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         for (int i = 0; i < tempEntries.length; i++) {
             MapEntries entries = tempEntries[i];
             if (entries == null) {
-                int initialSize = ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap)
-                        .getPutAllInitialSize(false, MAP_SIZE, tempEntries.length);
-                entries = new MapEntries(initialSize);
+                entries = freshEntries();
                 tempEntries[i] = entries;
             }
         }
         return true;
+    }
+
+    /**
+     * Helper method for a new MapEntries object.
+     * @return Empty MapEntries object
+     */
+    private MapEntries freshEntries() {
+        int initialSize = ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap)
+                .getPutAllInitialSize(false, MAP_SIZE, tempEntries.length);
+        return new MapEntries(initialSize);
     }
 
     /**
