@@ -40,6 +40,8 @@ import com.hazelcast.nio.ObjectDataInput;
 import com.hazelcast.nio.ObjectDataOutput;
 import com.hazelcast.nio.serialization.IdentifiedDataSerializable;
 import com.hazelcast.partition.PartitionAware;
+import com.hazelcast.query.Predicates;
+import com.hazelcast.spi.impl.InternalCompletableFuture;
 import com.hazelcast.spi.impl.NodeEngine;
 
 import javax.annotation.CheckReturnValue;
@@ -49,20 +51,25 @@ import java.io.OutputStream;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
+import static com.hazelcast.jet.impl.util.ExceptionUtil.rethrow;
+
 public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     public static final int DEFAULT_CHUNK_SIZE = 128 * 1024;
     private static final int MAP_SIZE = 1000; // For initial MapEntries array size
+    private static final long REMOVE_TIMEOUT = 10L; // Timeout for removing old snapshot IDs from IMap (in seconds)
 
     final int usableChunkCapacity; // this includes the serialization header for byte[], but not the terminator
     final byte[] serializedByteArrayHeader = new byte[3 * Bits.INT_SIZE_IN_BYTES];
@@ -378,8 +385,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             }
 
             logger.fine(String.format("Putting %d items to phase state map", amountInTempState));
-            long beforeSetAll = System.nanoTime();
             if (!IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
+                long beforeSetAll = System.nanoTime();
                 stateMap.setAllAsync(IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
                         tempStateMapConc :
                         tempStateMap)
@@ -413,12 +420,14 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 }
                 setEntries = Arrays.copyOf(setEntries, size);
                 partitionIds = Arrays.copyOf(partitionIds, size);
+                removeOldSnapshotIds();
+                long beforeSetAllLocal = System.nanoTime();
                 ((MapProxyImpl<SnapshotIMapKey<Object>, Object>) stateMap).setLocalEntriesAsync(partitionIds, setEntries)
                         .thenRun(() -> {
                             initTempEntries();
                             long afterSetAll = System.nanoTime();
                             if (IMapStateHelper.isLiveStateAsync(jetService.getConfig())) {
-                                logger.info(String.format("setEntriesAsync took: %d", afterSetAll - beforeSetAll));
+                                logger.info(String.format("setEntriesAsync took: %d", afterSetAll - beforeSetAllLocal));
                             }
                         }).toCompletableFuture().whenComplete(putResponseConsumer);
             }
@@ -426,6 +435,42 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         }
         // We are done as batch setAllAsync has started
         return true;
+    }
+
+    private void removeOldSnapshotIds() {
+        if (!IMapStateHelper.isRemoveInMasterEnabled(jetService.getConfig())) {
+            try {
+                long beforeRemoveAll = System.nanoTime();
+                List<Integer> localPartitions = partitionService.getMemberPartitions(nodeEngine.getThisAddress());
+                AtomicInteger counter = new AtomicInteger(localPartitions.size());
+                InternalCompletableFuture<Void> removeFuture = new InternalCompletableFuture<>();
+                BiConsumer<Void, Throwable> callback = (response, t) -> {
+                    if (t != null) {
+                        removeFuture.completeExceptionally(t);
+                    }
+                    if (counter.decrementAndGet() == 0 && !removeFuture.isDone()) {
+                        removeFuture.complete(null);
+                    }
+                };
+                for (Integer i : localPartitions) {
+                    CompletableFuture.runAsync(() -> {
+//                            long beforeRemove = System.nanoTime();
+                        stateMap.removeAll(Predicates.partitionPredicate(
+                                serializationService.toObject(partitionKey(i)),
+                                IMapStateHelper.filterOldSnapshots(currentSnapshotId, jetService.getConfig())));
+//                            long afterRemoveAllOnce = System.nanoTime();
+//                            logger.info(String.format(
+//                                    "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
+                    }).whenCompleteAsync(callback);
+                }
+                removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
+                long afterRemoveAll = System.nanoTime();
+                logger.info(String.format("Remove all partitions took: %d", afterRemoveAll - beforeRemoveAll));
+            } catch (Throwable e) {
+                logger.severe("Got error during remove", e);
+                throw rethrow(e);
+            }
+        }
     }
 
     /**

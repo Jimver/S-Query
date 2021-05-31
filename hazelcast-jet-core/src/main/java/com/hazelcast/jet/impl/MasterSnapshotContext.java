@@ -28,7 +28,6 @@ import com.hazelcast.jet.impl.execution.init.ExecutionPlan;
 import com.hazelcast.jet.impl.operation.SnapshotPhase2Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation;
 import com.hazelcast.jet.impl.operation.SnapshotPhase1Operation.SnapshotPhase1Result;
-import com.hazelcast.jet.impl.processor.EvictSnapshotProcessor;
 import com.hazelcast.jet.impl.processor.IMapStateHelper;
 import com.hazelcast.jet.impl.processor.SnapshotIMapKey;
 import com.hazelcast.jet.impl.processor.TransformStatefulP;
@@ -263,16 +262,19 @@ class MasterSnapshotContext {
             // Evict older snapshot entries in each snapshot IMap
             long executeStart = System.nanoTime();
             snapshotIMaps.parallelStream().forEach(
-                    imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
+                    imap -> imap.removeAll(IMapStateHelper.filterOldSnapshots(newSnapshotId,
+                            mc.getJetService().getConfig())));
             long executeEnd = System.nanoTime();
             logger.info("Execute evictor on snapshot maps took: " + (executeEnd - executeStart));
         }
 
-        if (IMapStateHelper.isPhaseStateEnabled(mc.getJetService().getConfig())) {
+        if (IMapStateHelper.isPhaseStateEnabled(mc.getJetService().getConfig()) &&
+                IMapStateHelper.isRemoveInMasterEnabled(mc.getJetService().getConfig())) {
             // Evict older snapshot entries in each phase snapshot IMap
             long executeStart = System.nanoTime();
             phaseSnapshotIMaps.parallelStream().forEach(
-                    imap -> imap.executeOnEntries(new EvictSnapshotProcessor<>(newSnapshotId)));
+                    imap -> imap.removeAll(IMapStateHelper.filterOldSnapshots(newSnapshotId,
+                            mc.getJetService().getConfig())));
             long executeEnd = System.nanoTime();
             logger.info("Execute evictor on phase maps took : " + (executeEnd - executeStart));
         }

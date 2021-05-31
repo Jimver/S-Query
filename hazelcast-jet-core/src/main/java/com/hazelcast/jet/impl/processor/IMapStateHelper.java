@@ -17,6 +17,7 @@
 package com.hazelcast.jet.impl.processor;
 
 import com.hazelcast.jet.config.JetConfig;
+import com.hazelcast.query.Predicate;
 import com.hazelcast.spi.properties.HazelcastProperties;
 import com.hazelcast.spi.properties.HazelcastProperty;
 
@@ -25,32 +26,37 @@ import java.util.UUID;
 
 public final class IMapStateHelper {
     // Properties
-    public static final HazelcastProperty SNAPSHOT_STATE
+    private static final HazelcastProperty SNAPSHOT_STATE
             = new HazelcastProperty("state.snapshot", false);
-    public static final HazelcastProperty PHASE_STATE
+    private static final HazelcastProperty PHASE_STATE
             = new HazelcastProperty("state.phase", false);
-    public static final HazelcastProperty LIVE_STATE
+    private static final HazelcastProperty LIVE_STATE
             = new HazelcastProperty("state.live", false);
-    public static final HazelcastProperty LIVE_STATE_ASYNC
+    private static final HazelcastProperty LIVE_STATE_ASYNC
             = new HazelcastProperty("state.live.async", false);
-    public static final HazelcastProperty PHASE_BATCH
+    private static final HazelcastProperty PHASE_BATCH
             = new HazelcastProperty("state.phase.batch", false);
-    public static final HazelcastProperty PHASE_BATCH_WATERMARK
+    private static final HazelcastProperty PHASE_BATCH_WATERMARK
             = new HazelcastProperty("state.phase.batch.watermark", false);
-    public static final HazelcastProperty PHASE_BATCH_CONCURRENT
+    private static final HazelcastProperty PHASE_BATCH_CONCURRENT
             = new HazelcastProperty("state.phase.batch.concurrent", false);
-    public static final HazelcastProperty WAIT_FOR_FUTURES
+    private static final HazelcastProperty WAIT_FOR_FUTURES
             = new HazelcastProperty("wait.for.futures", false);
-    public static final HazelcastProperty BLOB_STATE
+    private static final HazelcastProperty BLOB_STATE
             = new HazelcastProperty("state.blob", true);
-    public static final HazelcastProperty MEMORY_FORMAT_OBJECT
+    private static final HazelcastProperty MEMORY_FORMAT_OBJECT
             = new HazelcastProperty("memory.format.object", false);
-    public static final HazelcastProperty FAST_SNAPSHOT
+    private static final HazelcastProperty FAST_SNAPSHOT
             = new HazelcastProperty("state.phase.setentries", false);
     private static final HazelcastProperty STATISTICS
             = new HazelcastProperty("state.phase.statistics", true);
     private static final HazelcastProperty BACKUP
             = new HazelcastProperty("state.phase.backup", true);
+    private static final HazelcastProperty REMOVE_IN_MASTER =
+            new HazelcastProperty("state.remove.master", false);
+    private static final HazelcastProperty SNAPSHOTS_TO_KEEP =
+            new HazelcastProperty("state.snapshotnum", 2);
+
 
     // Booleans which control if IMap state is used or not
     private static boolean snapshotStateEnabled; // Toggle for snapshot state
@@ -66,6 +72,9 @@ public final class IMapStateHelper {
     private static boolean fastSnapshot; // Toggle for fast snapshot put method using setEntries()
     private static boolean staticsEnabled; // Toggle for statistic enabled on snapshot IMap
     private static boolean isEnableBackup; // Toggle for enabling backup copies for snapshot IMap
+    // Toggle for removing old snapshot Ids in mastersnapshotcontext (true) or asyncsnapshotwriter (false)
+    private static boolean isRemoveInMaster;
+    private static int snapshotsToKeep; // Amount of snapshots to keep
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -81,6 +90,8 @@ public final class IMapStateHelper {
     private static boolean fastSnapshotCached;
     private static boolean staticsEnabledCached;
     private static boolean isEnableBackupCached;
+    private static boolean isRemoveInMasterCached;
+    private static boolean snapshotsToKeepCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -92,6 +103,13 @@ public final class IMapStateHelper {
             return Boolean.parseBoolean(property.getDefaultValue());
         }
         return new HazelcastProperties(config.getProperties()).getBoolean(property);
+    }
+
+    private static int getInt(JetConfig config, HazelcastProperty property) {
+        if (config == null) {
+            return Integer.parseInt(property.getDefaultValue());
+        }
+        return new HazelcastProperties(config.getProperties()).getInteger(property);
     }
 
     /**
@@ -204,6 +222,22 @@ public final class IMapStateHelper {
         return isEnableBackup;
     }
 
+    public static boolean isRemoveInMasterEnabled(JetConfig config) {
+        if (!isRemoveInMasterCached) {
+            isRemoveInMaster = getBool(config, REMOVE_IN_MASTER);
+            isRemoveInMasterCached = true;
+        }
+        return isRemoveInMaster;
+    }
+
+    public static int getSnapshotsToKeep(JetConfig config) {
+        if (!snapshotsToKeepCached) {
+            snapshotsToKeep = getInt(config, SNAPSHOTS_TO_KEEP);
+            snapshotsToKeepCached = true;
+        }
+        return snapshotsToKeep;
+    }
+
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
         return isSnapshotStateEnabled(config) || isPhaseStateEnabled(config);
     }
@@ -260,6 +294,23 @@ public final class IMapStateHelper {
 
     public static String memberCountdownLatchHelper(UUID memberName, String jobName) {
         return String.format("cdl-%s-%s", memberName.toString(), jobName);
+    }
+
+    /**
+     * Predicate helper that selects old snapshot items.
+     * @param curSnapshotId The current snapshot ID
+     * @return Predicate that returns true for items with
+     * snapshot ID older than curSnapshotId - AMOUNT_TO_KEEP
+     * or snapshot ID newer then curSnapshotId
+     */
+    public static Predicate<SnapshotIMapKey<Object>, Object> filterOldSnapshots(long curSnapshotId, JetConfig config) {
+        if (!snapshotsToKeepCached) {
+            getSnapshotsToKeep(config);
+        }
+        return mapEntry -> {
+            long ssid = mapEntry.getKey().getSnapshotId();
+            return ssid <= curSnapshotId - snapshotsToKeep || ssid > curSnapshotId;
+        };
     }
 
 }
