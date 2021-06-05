@@ -56,6 +56,8 @@ public final class IMapStateHelper {
             new HazelcastProperty("state.remove.master", false);
     private static final HazelcastProperty SNAPSHOTS_TO_KEEP =
             new HazelcastProperty("state.snapshotnum", 2);
+    private static final HazelcastProperty SNAPSHOT_DEBUG =
+            new HazelcastProperty("state.debug", false);
 
 
     // Booleans which control if IMap state is used or not
@@ -74,6 +76,7 @@ public final class IMapStateHelper {
     private static boolean isEnableBackup; // Toggle for enabling backup copies for snapshot IMap
     // Toggle for removing old snapshot Ids in mastersnapshotcontext (true) or asyncsnapshotwriter (false)
     private static boolean isRemoveInMaster;
+    private static boolean isDebugSnap; // Toggle for enabling logging of IMap times
     private static int snapshotsToKeep; // Amount of snapshots to keep
 
     // Used to keep track if imap state boolean is already cached
@@ -92,6 +95,7 @@ public final class IMapStateHelper {
     private static boolean isEnableBackupCached;
     private static boolean isRemoveInMasterCached;
     private static boolean snapshotsToKeepCached;
+    private static boolean isDebugSnapCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -230,6 +234,14 @@ public final class IMapStateHelper {
         return isRemoveInMaster;
     }
 
+    public static boolean isDebugSnapshot(JetConfig config) {
+        if (!isDebugSnapCached) {
+            isDebugSnap = getBool(config, SNAPSHOT_DEBUG);
+            isDebugSnapCached = true;
+        }
+        return isDebugSnap;
+    }
+
     public static int getSnapshotsToKeep(JetConfig config) {
         if (!snapshotsToKeepCached) {
             snapshotsToKeep = getInt(config, SNAPSHOTS_TO_KEEP);
@@ -237,6 +249,7 @@ public final class IMapStateHelper {
         }
         return snapshotsToKeep;
     }
+
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
         return isSnapshotStateEnabled(config) || isPhaseStateEnabled(config);

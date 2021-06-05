@@ -398,8 +398,8 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                                 logger.fine("Releasing lock from setAllAsync");
                                 unlockStateMap();
                             }
-                            long afterSetAll = System.nanoTime();
-                            if (IMapStateHelper.isLiveStateAsync(jetService.getConfig())) {
+                            if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+                                long afterSetAll = System.nanoTime();
                                 logger.info(String.format("setAllAsync took: %d", afterSetAll - beforeSetAll));
                             }
                         }).toCompletableFuture().whenComplete(putResponseConsumer);
@@ -426,7 +426,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                         .thenRun(() -> {
                             initTempEntries();
                             long afterSetAll = System.nanoTime();
-                            if (IMapStateHelper.isLiveStateAsync(jetService.getConfig())) {
+                            if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
                                 logger.info(String.format("setEntriesAsync took: %d", afterSetAll - beforeSetAllLocal));
                             }
                         }).toCompletableFuture().whenComplete(putResponseConsumer);
@@ -454,13 +454,15 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                 };
                 for (Integer i : localPartitions) {
                     CompletableFuture.runAsync(() -> {
-//                            long beforeRemove = System.nanoTime();
+                        long beforeRemove = System.nanoTime();
                         stateMap.removeAll(Predicates.partitionPredicate(
                                 serializationService.toObject(partitionKey(i)),
                                 IMapStateHelper.filterOldSnapshots(currentSnapshotId, jetService.getConfig())));
-//                            long afterRemoveAllOnce = System.nanoTime();
-//                            logger.info(String.format(
-//                                    "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
+                        if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+                            long afterRemoveAllOnce = System.nanoTime();
+                            logger.info(String.format(
+                                        "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
+                        }
                     }).whenCompleteAsync(callback);
                 }
                 removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
