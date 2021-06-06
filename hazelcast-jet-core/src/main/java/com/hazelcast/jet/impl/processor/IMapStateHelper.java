@@ -57,7 +57,9 @@ public final class IMapStateHelper {
     private static final HazelcastProperty SNAPSHOTS_TO_KEEP =
             new HazelcastProperty("state.snapshotnum", 2);
     private static final HazelcastProperty SNAPSHOT_DEBUG =
-            new HazelcastProperty("state.debug", false);
+            new HazelcastProperty("state.debug.snapshot", false);
+    private static final HazelcastProperty REMOVE_DEBUG =
+            new HazelcastProperty("state.debug.remove", false);
 
 
     // Booleans which control if IMap state is used or not
@@ -77,6 +79,7 @@ public final class IMapStateHelper {
     // Toggle for removing old snapshot Ids in mastersnapshotcontext (true) or asyncsnapshotwriter (false)
     private static boolean isRemoveInMaster;
     private static boolean isDebugSnap; // Toggle for enabling logging of IMap times
+    private static boolean isDebugRem; // Toggle for enabling logging of remove from IMap times
     private static int snapshotsToKeep; // Amount of snapshots to keep
 
     // Used to keep track if imap state boolean is already cached
@@ -96,6 +99,7 @@ public final class IMapStateHelper {
     private static boolean isRemoveInMasterCached;
     private static boolean snapshotsToKeepCached;
     private static boolean isDebugSnapCached;
+    private static boolean isDebugRemCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -240,6 +244,14 @@ public final class IMapStateHelper {
             isDebugSnapCached = true;
         }
         return isDebugSnap;
+    }
+
+    public static boolean isDebugRemove(JetConfig config) {
+        if (!isDebugRemCached) {
+            isDebugRem = getBool(config, REMOVE_DEBUG);
+            isDebugRemCached = true;
+        }
+        return isDebugRem;
     }
 
     public static int getSnapshotsToKeep(JetConfig config) {
