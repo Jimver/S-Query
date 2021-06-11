@@ -22,6 +22,7 @@ import com.hazelcast.spi.properties.HazelcastProperties;
 import com.hazelcast.spi.properties.HazelcastProperty;
 
 import java.text.MessageFormat;
+import java.util.Map;
 import java.util.UUID;
 
 public final class IMapStateHelper {
@@ -332,10 +333,26 @@ public final class IMapStateHelper {
         if (!snapshotsToKeepCached) {
             snapshotsToKeep = getSnapshotsToKeep(config);
         }
-        return mapEntry -> {
+        return new FilterOldSnapshots(curSnapshotId, snapshotsToKeep);
+    }
+
+    /**
+     * Helper class for filtering out old snapshot items.
+     */
+    public static class FilterOldSnapshots implements Predicate<SnapshotIMapKey<Object>, Object> {
+        private final long curSnapshotId;
+        private final int amountToKeep;
+
+        public FilterOldSnapshots(long curSnapshotId, int amountToKeep) {
+            this.curSnapshotId = curSnapshotId;
+            this.amountToKeep = amountToKeep;
+        }
+
+        @Override
+        public boolean apply(Map.Entry<SnapshotIMapKey<Object>, Object> mapEntry) {
             long ssid = mapEntry.getKey().getSnapshotId();
-            return ssid <= curSnapshotId - snapshotsToKeep || ssid > curSnapshotId;
-        };
+            return ssid < curSnapshotId - amountToKeep || ssid > curSnapshotId;
+        }
     }
 
 }
