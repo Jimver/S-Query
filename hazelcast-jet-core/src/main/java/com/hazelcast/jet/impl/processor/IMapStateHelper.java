@@ -351,7 +351,7 @@ public final class IMapStateHelper {
         @Override
         public boolean apply(Map.Entry<SnapshotIMapKey<Object>, Object> mapEntry) {
             long ssid = mapEntry.getKey().getSnapshotId();
-            return ssid < curSnapshotId - amountToKeep || ssid > curSnapshotId;
+            return ssid <= curSnapshotId - amountToKeep || ssid > curSnapshotId;
         }
     }
 
