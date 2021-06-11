@@ -325,12 +325,12 @@ public final class IMapStateHelper {
      * Predicate helper that selects old snapshot items.
      * @param curSnapshotId The current snapshot ID
      * @return Predicate that returns true for items with
-     * snapshot ID older than curSnapshotId - AMOUNT_TO_KEEP
-     * or snapshot ID newer then curSnapshotId
+     * snapshot ID older than curSnapshotId - amount to keep
+     * or snapshot ID newer then curSnapshotId, false otherwise
      */
     public static Predicate<SnapshotIMapKey<Object>, Object> filterOldSnapshots(long curSnapshotId, JetConfig config) {
         if (!snapshotsToKeepCached) {
-            getSnapshotsToKeep(config);
+            snapshotsToKeep = getSnapshotsToKeep(config);
         }
         return mapEntry -> {
             long ssid = mapEntry.getKey().getSnapshotId();

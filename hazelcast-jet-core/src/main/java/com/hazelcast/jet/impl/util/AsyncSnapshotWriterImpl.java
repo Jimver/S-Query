@@ -386,6 +386,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
             logger.fine(String.format("Putting %d items to phase state map", amountInTempState));
             if (!IMapStateHelper.isFastSnapshotEnabled(jetService.getConfig())) {
+                removeOldSnapshotIds();
                 long beforeSetAll = System.nanoTime();
                 stateMap.setAllAsync(IMapStateHelper.isBatchPhaseConcurrentEnabled(jetService.getConfig()) ?
                         tempStateMapConc :
@@ -458,7 +459,7 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                         stateMap.removeAll(Predicates.partitionPredicate(
                                 serializationService.toObject(partitionKey(i)),
                                 IMapStateHelper.filterOldSnapshots(currentSnapshotId, jetService.getConfig())));
-                        if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+                        if (IMapStateHelper.isDebugRemove(jetService.getConfig())) {
                             long afterRemoveAllOnce = System.nanoTime();
                             logger.info(String.format(
                                         "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
@@ -466,8 +467,10 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
                     }).whenCompleteAsync(callback);
                 }
                 removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
-                long afterRemoveAll = System.nanoTime();
-                logger.info(String.format("Remove all partitions took: %d", afterRemoveAll - beforeRemoveAll));
+                if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+                    long afterRemoveAll = System.nanoTime();
+                    logger.info(String.format("Remove all partitions took: %d", afterRemoveAll - beforeRemoveAll));
+                }
             } catch (Throwable e) {
                 logger.severe("Got error during remove", e);
                 throw rethrow(e);
