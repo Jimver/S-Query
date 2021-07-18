@@ -178,6 +178,12 @@ public final class UnsupportedOperationVisitor extends SqlBasicVisitor<Void> {
         SUPPORTED_OPERATORS.add(HazelcastSqlOperatorTable.RTRIM);
         SUPPORTED_OPERATORS.add(HazelcastSqlOperatorTable.BTRIM);
 
+        // Dates
+        SUPPORTED_OPERATORS.add(SqlStdOperatorTable.CURRENT_DATE);
+        SUPPORTED_OPERATORS.add(SqlStdOperatorTable.CURRENT_TIMESTAMP);
+        SUPPORTED_OPERATORS.add(SqlStdOperatorTable.LOCALTIMESTAMP);
+        SUPPORTED_OPERATORS.add(SqlStdOperatorTable.LOCALTIME);
+
         // Extensions
         SUPPORTED_OPERATORS.add(SqlOption.OPERATOR);
         SUPPORTED_OPERATORS.add(SqlShowStatement.SHOW_MAPPINGS);
