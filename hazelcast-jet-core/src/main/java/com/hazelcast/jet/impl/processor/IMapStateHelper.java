@@ -27,7 +27,7 @@ import java.util.UUID;
 
 public final class IMapStateHelper {
     // Properties
-    private static final HazelcastProperty SNAPSHOT_STATE
+    static final HazelcastProperty SNAPSHOT_STATE
             = new HazelcastProperty("state.snapshot", false);
     private static final HazelcastProperty PHASE_STATE
             = new HazelcastProperty("state.phase", false);
@@ -61,6 +61,8 @@ public final class IMapStateHelper {
             new HazelcastProperty("state.debug.snapshot", false);
     private static final HazelcastProperty REMOVE_DEBUG =
             new HazelcastProperty("state.debug.remove", false);
+    private static final HazelcastProperty INCREMENTAL_SNASPHOT =
+            new HazelcastProperty("state.phase.incremental", false);
 
 
     // Booleans which control if IMap state is used or not
@@ -82,6 +84,7 @@ public final class IMapStateHelper {
     private static boolean isDebugSnap; // Toggle for enabling logging of IMap times
     private static boolean isDebugRem; // Toggle for enabling logging of remove from IMap times
     private static int snapshotsToKeep; // Amount of snapshots to keep
+    private static boolean incrementalSnapshot; // Toggle for incremental snapshots
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -101,6 +104,7 @@ public final class IMapStateHelper {
     private static boolean snapshotsToKeepCached;
     private static boolean isDebugSnapCached;
     private static boolean isDebugRemCached;
+    private static boolean incrementalSnapshotCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -263,6 +267,13 @@ public final class IMapStateHelper {
         return snapshotsToKeep;
     }
 
+    public static boolean isIncrementalSnapshot(JetConfig config) {
+        if (!incrementalSnapshotCached) {
+            incrementalSnapshot = getBool(config, INCREMENTAL_SNASPHOT);
+            incrementalSnapshotCached = true;
+        }
+        return incrementalSnapshot;
+    }
 
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
         return isSnapshotStateEnabled(config) || isPhaseStateEnabled(config);
@@ -335,6 +346,7 @@ public final class IMapStateHelper {
         }
         return new FilterOldSnapshots(curSnapshotId, snapshotsToKeep);
     }
+
 
     /**
      * Helper class for filtering out old snapshot items.

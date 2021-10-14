@@ -31,6 +31,7 @@ import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.BroadcastKey;
 import com.hazelcast.jet.core.ResettableSingletonTraverser;
 import com.hazelcast.jet.core.Watermark;
+import com.hazelcast.jet.datamodel.IncrementalSnapshotItem;
 import com.hazelcast.jet.datamodel.TimestampedItem;
 import com.hazelcast.jet.function.TriFunction;
 import com.hazelcast.jet.impl.util.Util;
@@ -72,7 +73,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final long ttl;
     private final Function<? super T, ? extends K> keyFn;
     private final ToLongFunction<? super T> timestampFn;
-    private final Function<K, TimestampedItem<S>> createIfAbsentFn;
+    private Function<K, TimestampedItem<S>> createIfAbsentFn; // For regular Timestamped item
+    private final Function<K, TimestampedItem<S>> createIfAbsentIncFn; // For incremental snapshot items
     private final TriFunction<? super S, ? super K, ? super T, ? extends Traverser<R>> statefulFlatMapFn;
     @Nullable
     private final TriFunction<? super S, ? super K, ? super Long, ? extends Traverser<R>> onEvictFn;
@@ -87,7 +89,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
     private final Traverser<?> evictingTraverserFlattened = evictingTraverser.flatMap(x -> x);
 
     private long currentWm = Long.MIN_VALUE;
-    private Traverser<? extends Entry<?, ?>> snapshotTraverser;
+    private Traverser<Entry<?, ?>> snapshotTraverser;
     private boolean inComplete;
 
     // Timer variables
@@ -152,6 +154,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         this.keyFn = keyFn;
         this.timestampFn = timestampFn;
         this.createIfAbsentFn = k -> new TimestampedItem<>(Long.MIN_VALUE, createFn.get());
+        this.createIfAbsentIncFn = k -> new IncrementalSnapshotItem<>(Long.MIN_VALUE, createFn.get());
         this.statefulFlatMapFn = statefulFlatMapFn;
         this.onEvictFn = onEvictFn;
         this.snapshotDelayMillis = snapshotDelayMillis;
@@ -241,6 +244,9 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             getLogger().info("Initializing member countdown latch in TransformP: " + countDownLatchName);
             // Initialize snapshot countdown latch
             ssCountDownLatch = hz.getCPSubsystem().getCountDownLatch(countDownLatchName);
+        }
+        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
+            this.createIfAbsentFn = this.createIfAbsentIncFn;
         }
     }
 
@@ -606,7 +612,21 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         if (snapshotTraverser == null) {
             getLogger().info(String.format("Sending %d items to traverser", keyToState.size()));
             snapshotTraverserStartTime = System.nanoTime();
-            snapshotTraverser = Traversers.<Entry<?, ?>>traverseIterable(keyToState.entrySet())
+            snapshotTraverser = Traversers.traverseIterable(keyToState.entrySet());
+            if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
+                snapshotTraverser = snapshotTraverser.filter(entry -> {
+                    // Cast should always go right if in incremental snapshot mode
+                    IncrementalSnapshotItem<?> incSnapEntry = (IncrementalSnapshotItem<?>) entry;
+                    if (!incSnapEntry.getBackedUp()) {
+                        // If entry is not backed up yet, set backed up to true and pass it on
+                        incSnapEntry.setBackedUp();
+                        return true;
+                    }
+                    // If backed up already then skip it
+                    return false;
+                });
+            }
+            snapshotTraverser = snapshotTraverser
                     .append(entry(broadcastKey(SnapshotKeys.WATERMARK), currentWm))
                     .onFirstNull(() -> {
                         snapshotTraverser = null;
@@ -626,7 +646,12 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             long wm = (long) value;
             currentWm = (currentWm == Long.MIN_VALUE) ? wm : min(currentWm, wm);
         } else {
-            TimestampedItem<S> old = keyToState.put((K) key, (TimestampedItem<S>) value);
+            TimestampedItem<S> old;
+            if (value instanceof IncrementalSnapshotItem) {
+                old = keyToState.put((K) key, (IncrementalSnapshotItem<S>) value);
+            } else {
+                old = keyToState.put((K) key, (TimestampedItem<S>) value);
+            }
             keyToStateIMap.set((K) key, (S) value);
             assert old == null : "Duplicate key '" + key + '\'';
         }
