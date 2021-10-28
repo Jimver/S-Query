@@ -5,12 +5,13 @@
  */
 package com.hazelcast.jet.hadoop.file.generated;
 
+import org.apache.avro.generic.GenericArray;
 import org.apache.avro.specific.SpecificData;
+import org.apache.avro.util.Utf8;
 import org.apache.avro.message.BinaryMessageEncoder;
 import org.apache.avro.message.BinaryMessageDecoder;
 import org.apache.avro.message.SchemaStore;
 
-@SuppressWarnings("all")
 @org.apache.avro.specific.AvroGenerated
 public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase implements org.apache.avro.specific.SpecificRecord {
   private static final long serialVersionUID = 1048657821695618046L;
@@ -26,7 +27,16 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
       new BinaryMessageDecoder<SpecificUser>(MODEL$, SCHEMA$);
 
   /**
+   * Return the BinaryMessageEncoder instance used by this class.
+   * @return the message encoder used by this class
+   */
+  public static BinaryMessageEncoder<SpecificUser> getEncoder() {
+    return ENCODER;
+  }
+
+  /**
    * Return the BinaryMessageDecoder instance used by this class.
+   * @return the message decoder used by this class
    */
   public static BinaryMessageDecoder<SpecificUser> getDecoder() {
     return DECODER;
@@ -35,17 +45,27 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
   /**
    * Create a new BinaryMessageDecoder instance for this class that uses the specified {@link SchemaStore}.
    * @param resolver a {@link SchemaStore} used to find schemas by fingerprint
+   * @return a BinaryMessageDecoder instance for this class backed by the given SchemaStore
    */
   public static BinaryMessageDecoder<SpecificUser> createDecoder(SchemaStore resolver) {
     return new BinaryMessageDecoder<SpecificUser>(MODEL$, SCHEMA$, resolver);
   }
 
-  /** Serializes this SpecificUser to a ByteBuffer. */
+  /**
+   * Serializes this SpecificUser to a ByteBuffer.
+   * @return a buffer holding the serialized data for this instance
+   * @throws java.io.IOException if this instance could not be serialized
+   */
   public java.nio.ByteBuffer toByteBuffer() throws java.io.IOException {
     return ENCODER.encode(this);
   }
 
-  /** Deserializes a SpecificUser from a ByteBuffer. */
+  /**
+   * Deserializes a SpecificUser from a ByteBuffer.
+   * @param b a byte buffer holding serialized data for an instance of this class
+   * @return a SpecificUser instance decoded from the given buffer
+   * @throws java.io.IOException if the given bytes could not be deserialized into an instance of this class
+   */
   public static SpecificUser fromByteBuffer(
       java.nio.ByteBuffer b) throws java.io.IOException {
     return DECODER.decode(b);
@@ -71,6 +91,7 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
     this.favorite_number = favorite_number;
   }
 
+  public org.apache.avro.specific.SpecificData getSpecificData() { return MODEL$; }
   public org.apache.avro.Schema getSchema() { return SCHEMA$; }
   // Used by DatumWriter.  Applications should not call.
   public java.lang.Object get(int field$) {
@@ -99,6 +120,7 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
     return name;
   }
 
+
   /**
    * Sets the value of the 'name' field.
    * @param value the value to set.
@@ -114,6 +136,7 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
   public java.lang.Integer getFavoriteNumber() {
     return favorite_number;
   }
+
 
   /**
    * Sets the value of the 'favorite_number' field.
@@ -137,7 +160,11 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
    * @return A new SpecificUser RecordBuilder
    */
   public static com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder newBuilder(com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder other) {
-    return new com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder(other);
+    if (other == null) {
+      return new com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder();
+    } else {
+      return new com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder(other);
+    }
   }
 
   /**
@@ -146,12 +173,17 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
    * @return A new SpecificUser RecordBuilder
    */
   public static com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder newBuilder(com.hazelcast.jet.hadoop.file.generated.SpecificUser other) {
-    return new com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder(other);
+    if (other == null) {
+      return new com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder();
+    } else {
+      return new com.hazelcast.jet.hadoop.file.generated.SpecificUser.Builder(other);
+    }
   }
 
   /**
    * RecordBuilder for SpecificUser instances.
    */
+  @org.apache.avro.specific.AvroGenerated
   public static class Builder extends org.apache.avro.specific.SpecificRecordBuilderBase<SpecificUser>
     implements org.apache.avro.data.RecordBuilder<SpecificUser> {
 
@@ -171,11 +203,11 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
       super(other);
       if (isValidValue(fields()[0], other.name)) {
         this.name = data().deepCopy(fields()[0].schema(), other.name);
-        fieldSetFlags()[0] = true;
+        fieldSetFlags()[0] = other.fieldSetFlags()[0];
       }
       if (isValidValue(fields()[1], other.favorite_number)) {
         this.favorite_number = data().deepCopy(fields()[1].schema(), other.favorite_number);
-        fieldSetFlags()[1] = true;
+        fieldSetFlags()[1] = other.fieldSetFlags()[1];
       }
     }
 
@@ -184,7 +216,7 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
      * @param other The existing instance to copy.
      */
     private Builder(com.hazelcast.jet.hadoop.file.generated.SpecificUser other) {
-            super(SCHEMA$);
+      super(SCHEMA$);
       if (isValidValue(fields()[0], other.name)) {
         this.name = data().deepCopy(fields()[0].schema(), other.name);
         fieldSetFlags()[0] = true;
@@ -202,6 +234,7 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
     public java.lang.CharSequence getName() {
       return name;
     }
+
 
     /**
       * Sets the value of the 'name' field.
@@ -242,6 +275,7 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
       return favorite_number;
     }
 
+
     /**
       * Sets the value of the 'favorite_number' field.
       * @param value The value of 'favorite_number'.
@@ -281,6 +315,8 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
         record.name = fieldSetFlags()[0] ? this.name : (java.lang.CharSequence) defaultValue(fields()[0]);
         record.favorite_number = fieldSetFlags()[1] ? this.favorite_number : (java.lang.Integer) defaultValue(fields()[1]);
         return record;
+      } catch (org.apache.avro.AvroMissingFieldException e) {
+        throw e;
       } catch (java.lang.Exception e) {
         throw new org.apache.avro.AvroRuntimeException(e);
       }
@@ -305,4 +341,67 @@ public class SpecificUser extends org.apache.avro.specific.SpecificRecordBase im
     READER$.read(this, SpecificData.getDecoder(in));
   }
 
+  @Override protected boolean hasCustomCoders() { return true; }
+
+  @Override public void customEncode(org.apache.avro.io.Encoder out)
+    throws java.io.IOException
+  {
+    out.writeString(this.name);
+
+    if (this.favorite_number == null) {
+      out.writeIndex(1);
+      out.writeNull();
+    } else {
+      out.writeIndex(0);
+      out.writeInt(this.favorite_number);
+    }
+
+  }
+
+  @Override public void customDecode(org.apache.avro.io.ResolvingDecoder in)
+    throws java.io.IOException
+  {
+    org.apache.avro.Schema.Field[] fieldOrder = in.readFieldOrderIfDiff();
+    if (fieldOrder == null) {
+      this.name = in.readString(this.name instanceof Utf8 ? (Utf8)this.name : null);
+
+      if (in.readIndex() != 0) {
+        in.readNull();
+        this.favorite_number = null;
+      } else {
+        this.favorite_number = in.readInt();
+      }
+
+    } else {
+      for (int i = 0; i < 2; i++) {
+        switch (fieldOrder[i].pos()) {
+        case 0:
+          this.name = in.readString(this.name instanceof Utf8 ? (Utf8)this.name : null);
+          break;
+
+        case 1:
+          if (in.readIndex() != 0) {
+            in.readNull();
+            this.favorite_number = null;
+          } else {
+            this.favorite_number = in.readInt();
+          }
+          break;
+
+        default:
+          throw new java.io.IOException("Corrupt ResolvingDecoder.");
+        }
+      }
+    }
+  }
 }
+
+
+
+
+
+
+
+
+
+

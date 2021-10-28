@@ -22,6 +22,7 @@ import com.hazelcast.spi.properties.HazelcastProperties;
 import com.hazelcast.spi.properties.HazelcastProperty;
 
 import java.text.MessageFormat;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.UUID;
 
@@ -63,6 +64,8 @@ public final class IMapStateHelper {
             new HazelcastProperty("state.debug.remove", false);
     private static final HazelcastProperty INCREMENTAL_SNASPHOT =
             new HazelcastProperty("state.phase.incremental", false);
+    private static final HazelcastProperty INCREMENTAL_REMOVEALL =
+            new HazelcastProperty("state.phase.incremental.removeall", false);
 
 
     // Booleans which control if IMap state is used or not
@@ -85,6 +88,7 @@ public final class IMapStateHelper {
     private static boolean isDebugRem; // Toggle for enabling logging of remove from IMap times
     private static int snapshotsToKeep; // Amount of snapshots to keep
     private static boolean incrementalSnapshot; // Toggle for incremental snapshots
+    private static boolean incrementalRemoveAll; // Toggle for removing all old snapshots at once
 
     // Used to keep track if imap state boolean is already cached
     private static boolean snapshotStateEnabledCached;
@@ -105,6 +109,7 @@ public final class IMapStateHelper {
     private static boolean isDebugSnapCached;
     private static boolean isDebugRemCached;
     private static boolean incrementalSnapshotCached;
+    private static boolean incrementalRemoveAllCached;
 
     // Private constructor to prevent instantiation
     private IMapStateHelper() {
@@ -275,6 +280,14 @@ public final class IMapStateHelper {
         return incrementalSnapshot;
     }
 
+    public static boolean isIncrementalRemoveAll(JetConfig config) {
+        if (!incrementalRemoveAllCached) {
+            incrementalRemoveAll = getBool(config, INCREMENTAL_REMOVEALL);
+            incrementalRemoveAllCached = true;
+        }
+        return incrementalRemoveAll;
+    }
+
     public static boolean isSnapshotOrPhaseEnabled(JetConfig config) {
         return isSnapshotStateEnabled(config) || isPhaseStateEnabled(config);
     }
@@ -347,6 +360,20 @@ public final class IMapStateHelper {
         return new FilterOldSnapshots(curSnapshotId, snapshotsToKeep);
     }
 
+    /**
+     * Predicate helper that selects old incremental snapshot items.
+     * @param toRemove Set of SnapshotIMap keys to remove
+     * @return Predicate that returns true for items with
+     * key that are int he toRemove set.
+     */
+    @SuppressWarnings("IllegalType")
+    public static Predicate<SnapshotIMapKey<Object>, Object> filterOldIncrementalSnapshots(
+            HashSet<SnapshotIMapKey<Object>> toRemove, JetConfig config) {
+        if (!snapshotsToKeepCached) {
+            snapshotsToKeep = getSnapshotsToKeep(config);
+        }
+        return new FilterOldIncrementalSnapshots(toRemove);
+    }
 
     /**
      * Helper class for filtering out old snapshot items.
@@ -367,4 +394,19 @@ public final class IMapStateHelper {
         }
     }
 
+    /**
+     * Helper class for filtering out old incremental snapshot items.
+     */
+    public static class FilterOldIncrementalSnapshots implements Predicate<SnapshotIMapKey<Object>, Object> {
+        private final HashSet<SnapshotIMapKey<Object>> toRemove; // Should be serializable
+
+        public FilterOldIncrementalSnapshots(HashSet<SnapshotIMapKey<Object>> toRemove) {
+            this.toRemove = toRemove;
+        }
+
+        @Override
+        public boolean apply(Map.Entry<SnapshotIMapKey<Object>, Object> mapEntry) {
+            return toRemove.contains(mapEntry.getKey());
+        }
+    }
 }

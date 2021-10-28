@@ -44,6 +44,13 @@ public class IncrementalSnapshotItem<T> extends TimestampedItem<T> {
     }
 
     /**
+     * Set the internal backed up field to false, use this when the item changes value
+     */
+    public void setNotBackedUp() {
+        backedUp = true;
+    }
+
+    /**
      * Gets the backup status of this item.
      * @return True if this item is backed up, false otherwise.
      */

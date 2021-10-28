@@ -327,10 +327,32 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             return Traversers.empty();
         }
         K key = keyFn.apply(event);
-        TimestampedItem<S> tsAndState = keyToState.computeIfAbsent(key, createIfAbsentFn);
+        TimestampedItem<S> tsAndState;
+        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
+            tsAndState = keyToState.computeIfAbsent(key, createIfAbsentIncFn);
+        } else {
+            tsAndState = keyToState.computeIfAbsent(key, createIfAbsentFn);
+        }
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
+//        int hashBefore = 0;
+//        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
+//            hashBefore = state.hashCode();
+//            getLogger().info(String.format("Hash before: %d", hashBefore));
+//        }
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
+        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
+            // State changed so set to not backed up
+            ((IncrementalSnapshotItem<?>) tsAndState).setNotBackedUp();
+        }
+        // If state changes, set backup to false
+//        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
+//            int hashAfter = state.hashCode();
+//            getLogger().info(String.format("Hash after: %d", hashAfter));
+//            if (hashBefore != hashAfter) {
+//                ((IncrementalSnapshotItem<?>) tsAndState).setNotBackedUp();
+//            }
+//        }
         if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
             if (IMapStateHelper.isLiveStateAsync(jetConfig)) {
                 keyToStateIMap.setAsync(key, state); // Put to live state IMap
@@ -613,10 +635,15 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
             getLogger().info(String.format("Sending %d items to traverser", keyToState.size()));
             snapshotTraverserStartTime = System.nanoTime();
             snapshotTraverser = Traversers.traverseIterable(keyToState.entrySet());
+            // Filter out already backed up states
             if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
                 snapshotTraverser = snapshotTraverser.filter(entry -> {
                     // Cast should always go right if in incremental snapshot mode
-                    IncrementalSnapshotItem<?> incSnapEntry = (IncrementalSnapshotItem<?>) entry;
+                    Object value = entry.getValue();
+                    if (!(value instanceof IncrementalSnapshotItem)) {
+                        throw new IllegalStateException("Wrong type, excpected IncrementalSnapshotItem");
+                    }
+                    IncrementalSnapshotItem<?> incSnapEntry = (IncrementalSnapshotItem<?>) value;
                     if (!incSnapEntry.getBackedUp()) {
                         // If entry is not backed up yet, set backed up to true and pass it on
                         incSnapEntry.setBackedUp();

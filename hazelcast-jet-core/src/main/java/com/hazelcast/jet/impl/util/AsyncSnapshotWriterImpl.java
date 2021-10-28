@@ -40,6 +40,7 @@ import com.hazelcast.nio.ObjectDataInput;
 import com.hazelcast.nio.ObjectDataOutput;
 import com.hazelcast.nio.serialization.IdentifiedDataSerializable;
 import com.hazelcast.partition.PartitionAware;
+import com.hazelcast.query.Predicate;
 import com.hazelcast.query.Predicates;
 import com.hazelcast.spi.impl.InternalCompletableFuture;
 import com.hazelcast.spi.impl.NodeEngine;
@@ -49,8 +50,11 @@ import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteOrder;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -91,10 +95,12 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
     private final AtomicInteger numActiveFlushes = new AtomicInteger();
     private final SerializationService serializationService;
     // Temporary state map
-//    private final Map<SnapshotIMapKey<Object>, Data> tempStateMap = new HashMap<>();
-//    private final Map<SnapshotIMapKey<Object>, Data> tempStateMapConc = new ConcurrentHashMap<>();
     private final Map<SnapshotIMapKey<Object>, Data> tempStateMap = new HashMap<>();
     private final Map<SnapshotIMapKey<Object>, Data> tempStateMapConc = new ConcurrentHashMap<>();
+    // Known Snapshot ID map
+    private final Map<Object, ArrayDeque<Long>> prevSnapshotIdMap = new HashMap<>();
+    private final ArrayList<SnapshotIMapKey<Object>> snapshotsToRemoveList = new ArrayList<>();
+    private final HashSet<SnapshotIMapKey<Object>> snapshotsToRemove = new HashSet<>();
     // Varialbe to keep track if put to state map is done in offer()
     private final AtomicReference<Boolean> putAsyncStateDone = new AtomicReference<>(false);
     // Lock for above temp state map
@@ -440,40 +446,60 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
 
     private void removeOldSnapshotIds() {
         if (!IMapStateHelper.isRemoveInMasterEnabled(jetService.getConfig())) {
-            try {
+            if (IMapStateHelper.isIncrementalSnapshot(jetService.getConfig())
+                    && !IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
                 long beforeRemoveAll = System.nanoTime();
-                List<Integer> localPartitions = partitionService.getMemberPartitions(nodeEngine.getThisAddress());
-                AtomicInteger counter = new AtomicInteger(localPartitions.size());
-                InternalCompletableFuture<Void> removeFuture = new InternalCompletableFuture<>();
-                BiConsumer<Void, Throwable> callback = (response, t) -> {
-                    if (t != null) {
-                        removeFuture.completeExceptionally(t);
-                    }
-                    if (counter.decrementAndGet() == 0 && !removeFuture.isDone()) {
-                        removeFuture.complete(null);
-                    }
-                };
-                for (Integer i : localPartitions) {
-                    CompletableFuture.runAsync(() -> {
-                        long beforeRemove = System.nanoTime();
-                        stateMap.removeAll(Predicates.partitionPredicate(
-                                serializationService.toObject(partitionKey(i)),
-                                IMapStateHelper.filterOldSnapshots(currentSnapshotId, jetService.getConfig())));
-                        if (IMapStateHelper.isDebugRemove(jetService.getConfig())) {
-                            long afterRemoveAllOnce = System.nanoTime();
-                            logger.info(String.format(
-                                        "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
-                        }
-                    }).whenCompleteAsync(callback);
-                }
-                removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
+                snapshotsToRemoveList.forEach(key -> stateMap.delete(key));
                 if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
                     long afterRemoveAll = System.nanoTime();
-                    logger.info(String.format("Remove all partitions took: %d", afterRemoveAll - beforeRemoveAll));
+                    logger.info(String.format(
+                            "Remove old incremental snapshots took: %d", afterRemoveAll - beforeRemoveAll));
                 }
-            } catch (Throwable e) {
-                logger.severe("Got error during remove", e);
-                throw rethrow(e);
+            } else {
+                try {
+                    long beforeRemoveAll = System.nanoTime();
+                    List<Integer> localPartitions = partitionService.getMemberPartitions(nodeEngine.getThisAddress());
+                    AtomicInteger counter = new AtomicInteger(localPartitions.size());
+                    InternalCompletableFuture<Void> removeFuture = new InternalCompletableFuture<>();
+                    BiConsumer<Void, Throwable> callback = (response, t) -> {
+                        if (t != null) {
+                            removeFuture.completeExceptionally(t);
+                        }
+                        if (counter.decrementAndGet() == 0 && !removeFuture.isDone()) {
+                            removeFuture.complete(null);
+                        }
+                    };
+                    for (Integer i : localPartitions) {
+                        CompletableFuture.runAsync(() -> {
+                            long beforeRemove = System.nanoTime();
+                            Predicate<SnapshotIMapKey<Object>, Object> removePredicate;
+                                    if (IMapStateHelper.isIncrementalSnapshot(jetService.getConfig())
+                                            && IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
+                                        removePredicate = IMapStateHelper.filterOldIncrementalSnapshots(
+                                                snapshotsToRemove, jetService.getConfig());
+                                    } else {
+                                        removePredicate = IMapStateHelper.filterOldSnapshots(
+                                                currentSnapshotId, jetService.getConfig());
+                                    }
+                            stateMap.removeAll(Predicates.partitionPredicate(
+                                    serializationService.toObject(partitionKey(i)),
+                                    removePredicate));
+                            if (IMapStateHelper.isDebugRemove(jetService.getConfig())) {
+                                long afterRemoveAllOnce = System.nanoTime();
+                                logger.info(String.format(
+                                            "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
+                            }
+                        }).whenCompleteAsync(callback);
+                    }
+                    removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
+                    if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+                        long afterRemoveAll = System.nanoTime();
+                        logger.info(String.format("Remove all partitions took: %d", afterRemoveAll - beforeRemoveAll));
+                    }
+                } catch (Throwable e) {
+                    logger.severe("Got error during remove", e);
+                    throw rethrow(e);
+                }
             }
         }
     }
@@ -549,6 +575,27 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
             }
         } catch (HazelcastInstanceNotActiveException ignored) {
             return false;
+        }
+        // Done if no incremental snapshot configured
+        if (!IMapStateHelper.isIncrementalSnapshot(jetService.getConfig())) {
+            return true;
+        }
+        // Put key to prev entries and update snapshots to remove array/set
+        Object key = serializationService.toObject(entry.getKey());
+        prevSnapshotIdMap.putIfAbsent(key,
+                new ArrayDeque<>(IMapStateHelper.getSnapshotsToKeep(jetService.getConfig())));
+        ArrayDeque<Long> snapshotIds = prevSnapshotIdMap.get(key);
+        snapshotIds.offerLast(currentSnapshotId);
+        while (snapshotIds.size() > IMapStateHelper.getSnapshotsToKeep(jetService.getConfig())) {
+            Long oldestSnapshotId = snapshotIds.pollFirst();
+            if (oldestSnapshotId == null) {
+                throw new IllegalStateException("No available snapshot ID in deque!");
+            }
+            if (IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
+                snapshotsToRemove.add(new SnapshotIMapKey<>(key, oldestSnapshotId));
+            } else {
+                snapshotsToRemoveList.add(new SnapshotIMapKey<>(key, oldestSnapshotId));
+            }
         }
         return true;
     }

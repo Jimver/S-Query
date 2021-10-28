@@ -53,6 +53,7 @@
 
     <properties>
         <!-- needed for CheckStyle -->
+        <checkstyle.skip>true</checkstyle.skip>
         <checkstyle.headerLocation>${maven.multiModuleProjectDirectory}/checkstyle/ClassHeaderHazelcastCommunity.txt</checkstyle.headerLocation>
     </properties>
 

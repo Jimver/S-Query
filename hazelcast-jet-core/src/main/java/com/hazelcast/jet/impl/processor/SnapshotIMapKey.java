@@ -26,13 +26,14 @@ import com.hazelcast.nio.serialization.IdentifiedDataSerializable;
 import com.hazelcast.partition.PartitionAware;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.Objects;
 
 import static com.hazelcast.internal.serialization.impl.HeapData.HEAP_DATA_OVERHEAD;
 import static com.hazelcast.internal.serialization.impl.HeapData.TYPE_OFFSET;
 import static com.hazelcast.internal.serialization.impl.SerializationConstants.CONSTANT_TYPE_DATA_SERIALIZABLE;
 
-public final class SnapshotIMapKey<K> implements IdentifiedDataSerializable, PartitionAware<K> {
+public final class SnapshotIMapKey<K> implements IdentifiedDataSerializable, PartitionAware<K>, Serializable {
     private K key;
 
 
