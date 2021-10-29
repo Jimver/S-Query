@@ -343,7 +343,7 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
         if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
             // State changed so set to not backed up
-            ((IncrementalSnapshotItem<?>) tsAndState).setNotBackedUp();
+            ((IncrementalSnapshotItem<?>) tsAndState).setNotSnapshotted();
         }
         // If state changes, set backup to false
 //        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
@@ -644,11 +644,13 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                         throw new IllegalStateException("Wrong type, excpected IncrementalSnapshotItem");
                     }
                     IncrementalSnapshotItem<?> incSnapEntry = (IncrementalSnapshotItem<?>) value;
-                    if (!incSnapEntry.getBackedUp()) {
+                    if (!incSnapEntry.getSnapshotted()) {
                         // If entry is not backed up yet, set backed up to true and pass it on
-                        incSnapEntry.setBackedUp();
+                        incSnapEntry.setSnapshotted();
+                        getLogger().info("Send to traverser: " + entry.getKey());
                         return true;
                     }
+                    getLogger().info("Don't send to traverser: " + entry.getKey());
                     // If backed up already then skip it
                     return false;
                 });

@@ -20,11 +20,11 @@ import java.util.Objects;
 
 /**
  * Incremental snapshot item. Subclass of TimestampedItem.
- * Adds a backedUp field denoting if this item was backed up already.
+ * Adds a snapshotted status denoting if this item was snapshotted already.
  * @param <T>
  */
 public class IncrementalSnapshotItem<T> extends TimestampedItem<T> {
-    private boolean backedUp; // False by default (not backed up)
+    private boolean snapshotted; // False by default (not snapshotted)
 
     /**
      * Creates a new incremental snapshot item.
@@ -34,28 +34,29 @@ public class IncrementalSnapshotItem<T> extends TimestampedItem<T> {
      */
     public IncrementalSnapshotItem(long timestamp, T item) {
         super(timestamp, item);
+        this.snapshotted = false;
     }
 
     /**
-     * Set the internal backed up field to true, use this when you submitted this item to the snapshot backup queue
+     * Set the snapshotted status to true, use this when you submitted this item to the snapshot backup queue
      */
-    public void setBackedUp() {
-        backedUp = true;
+    public void setSnapshotted() {
+        snapshotted = true;
     }
 
     /**
-     * Set the internal backed up field to false, use this when the item changes value
+     * Set the snapshotted status to false, use this when the item changes value
      */
-    public void setNotBackedUp() {
-        backedUp = true;
+    public void setNotSnapshotted() {
+        snapshotted = false;
     }
 
     /**
      * Gets the backup status of this item.
      * @return True if this item is backed up, false otherwise.
      */
-    public boolean getBackedUp() {
-        return this.backedUp;
+    public boolean getSnapshotted() {
+        return this.snapshotted;
     }
 
     @Override
@@ -70,19 +71,19 @@ public class IncrementalSnapshotItem<T> extends TimestampedItem<T> {
             return false;
         }
         IncrementalSnapshotItem<?> that = (IncrementalSnapshotItem<?>) o;
-        return backedUp == that.backedUp;
+        return snapshotted == that.snapshotted;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), backedUp);
+        return Objects.hash(super.hashCode(), snapshotted);
     }
 
     @Override
     public String toString() {
         return "IncrementalSnapshotItem{" +
                 "TimestampedItem=" + super.toString() +
-                ", backedUp=" + backedUp +
+                ", snapshotted=" + snapshotted +
                 '}';
     }
 }
