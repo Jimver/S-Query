@@ -335,24 +335,11 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
         }
         tsAndState.setTimestamp(max(tsAndState.timestamp(), timestamp));
         S state = tsAndState.item();
-//        int hashBefore = 0;
-//        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
-//            hashBefore = state.hashCode();
-//            getLogger().info(String.format("Hash before: %d", hashBefore));
-//        }
         Traverser<R> result = statefulFlatMapFn.apply(state, key, event);
         if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
             // State changed so set to not backed up
             ((IncrementalSnapshotItem<?>) tsAndState).setNotSnapshotted();
         }
-        // If state changes, set backup to false
-//        if (IMapStateHelper.isIncrementalSnapshot(jetConfig)) {
-//            int hashAfter = state.hashCode();
-//            getLogger().info(String.format("Hash after: %d", hashAfter));
-//            if (hashBefore != hashAfter) {
-//                ((IncrementalSnapshotItem<?>) tsAndState).setNotBackedUp();
-//            }
-//        }
         if (IMapStateHelper.isLiveStateEnabled(jetConfig)) {
             if (IMapStateHelper.isLiveStateAsync(jetConfig)) {
                 keyToStateIMap.setAsync(key, state); // Put to live state IMap
@@ -647,10 +634,8 @@ public class TransformStatefulP<T, K, S, R> extends AbstractProcessor {
                     if (!incSnapEntry.getSnapshotted()) {
                         // If entry is not backed up yet, set backed up to true and pass it on
                         incSnapEntry.setSnapshotted();
-                        getLogger().info("Send to traverser: " + entry.getKey());
                         return true;
                     }
-                    getLogger().info("Don't send to traverser: " + entry.getKey());
                     // If backed up already then skip it
                     return false;
                 });
