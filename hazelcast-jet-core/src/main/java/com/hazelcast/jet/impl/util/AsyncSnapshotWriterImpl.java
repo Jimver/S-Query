@@ -444,62 +444,85 @@ public class AsyncSnapshotWriterImpl implements AsyncSnapshotWriter {
         return true;
     }
 
+    private void removeIncrementalSnapshotSerially() {
+        long beforeRemoveAll = System.nanoTime();
+        long toRemoveAmount = snapshotsToRemoveList.size();
+        snapshotsToRemoveList.forEach(key -> stateMap.delete(key));
+        snapshotsToRemoveList.clear();
+        if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+            long afterRemoveAll = System.nanoTime();
+            logger.info(String.format(
+                    "Remove %d old incremental snapshots took: %d",
+                    toRemoveAmount,  afterRemoveAll - beforeRemoveAll));
+        }
+    }
+
+    private void removeOldSnapshotsAll() {
+        try {
+            long beforeRemoveAll = System.nanoTime();
+            long toRemoveAmount = snapshotsToRemove.size();
+            List<Integer> localPartitions = partitionService.getMemberPartitions(nodeEngine.getThisAddress());
+            AtomicInteger counter = new AtomicInteger(localPartitions.size());
+            InternalCompletableFuture<Void> removeFuture = new InternalCompletableFuture<>();
+            BiConsumer<Void, Throwable> callback = (response, t) -> {
+                if (t != null) {
+                    removeFuture.completeExceptionally(t);
+                }
+                if (counter.decrementAndGet() == 0 && !removeFuture.isDone()) {
+                    removeFuture.complete(null);
+                }
+            };
+            for (Integer i : localPartitions) {
+                CompletableFuture.runAsync(() -> {
+                    long beforeRemove = System.nanoTime();
+                    Predicate<SnapshotIMapKey<Object>, Object> removePredicate;
+                    if (IMapStateHelper.isIncrementalSnapshot(jetService.getConfig())
+                            && IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
+                        // If incremental snapshots, use the HashSet predicate
+                        removePredicate = IMapStateHelper.filterOldIncrementalSnapshots(
+                                snapshotsToRemove, jetService.getConfig());
+                    } else {
+                        // If normal snapshots, just use current snapshot id predicate
+                        removePredicate = IMapStateHelper.filterOldSnapshots(
+                                currentSnapshotId, jetService.getConfig());
+                    }
+                    stateMap.removeAll(Predicates.partitionPredicate(
+                            serializationService.toObject(partitionKey(i)),
+                            removePredicate));
+                    if (IMapStateHelper.isDebugRemove(jetService.getConfig())) {
+                        long afterRemoveAllOnce = System.nanoTime();
+                        logger.info(String.format("Remove all from %d took: %d",
+                                i, afterRemoveAllOnce - beforeRemove));
+                    }
+                }).whenCompleteAsync(callback);
+            }
+            removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
+            snapshotsToRemove.clear();
+            if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
+                long afterRemoveAll = System.nanoTime();
+                if (IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
+                    logger.info(String.format("Remove %d from all partitions took: %d",
+                            toRemoveAmount, afterRemoveAll - beforeRemoveAll));
+                } else {
+                    logger.info(String.format("Remove from all partitions took: %d",
+                            afterRemoveAll - beforeRemoveAll));
+                }
+            }
+        } catch (Throwable e) {
+            logger.severe("Got error during remove", e);
+            throw rethrow(e);
+        }
+    }
+
     private void removeOldSnapshotIds() {
         if (!IMapStateHelper.isRemoveInMasterEnabled(jetService.getConfig())) {
             if (IMapStateHelper.isIncrementalSnapshot(jetService.getConfig())
                     && !IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
-                long beforeRemoveAll = System.nanoTime();
-                snapshotsToRemoveList.forEach(key -> stateMap.delete(key));
-                if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
-                    long afterRemoveAll = System.nanoTime();
-                    logger.info(String.format(
-                            "Remove old incremental snapshots took: %d", afterRemoveAll - beforeRemoveAll));
-                }
+                // Remove old snapshots one by one
+                removeIncrementalSnapshotSerially();
             } else {
-                try {
-                    long beforeRemoveAll = System.nanoTime();
-                    List<Integer> localPartitions = partitionService.getMemberPartitions(nodeEngine.getThisAddress());
-                    AtomicInteger counter = new AtomicInteger(localPartitions.size());
-                    InternalCompletableFuture<Void> removeFuture = new InternalCompletableFuture<>();
-                    BiConsumer<Void, Throwable> callback = (response, t) -> {
-                        if (t != null) {
-                            removeFuture.completeExceptionally(t);
-                        }
-                        if (counter.decrementAndGet() == 0 && !removeFuture.isDone()) {
-                            removeFuture.complete(null);
-                        }
-                    };
-                    for (Integer i : localPartitions) {
-                        CompletableFuture.runAsync(() -> {
-                            long beforeRemove = System.nanoTime();
-                            Predicate<SnapshotIMapKey<Object>, Object> removePredicate;
-                                    if (IMapStateHelper.isIncrementalSnapshot(jetService.getConfig())
-                                            && IMapStateHelper.isIncrementalRemoveAll(jetService.getConfig())) {
-                                        removePredicate = IMapStateHelper.filterOldIncrementalSnapshots(
-                                                snapshotsToRemove, jetService.getConfig());
-                                    } else {
-                                        removePredicate = IMapStateHelper.filterOldSnapshots(
-                                                currentSnapshotId, jetService.getConfig());
-                                    }
-                            stateMap.removeAll(Predicates.partitionPredicate(
-                                    serializationService.toObject(partitionKey(i)),
-                                    removePredicate));
-                            if (IMapStateHelper.isDebugRemove(jetService.getConfig())) {
-                                long afterRemoveAllOnce = System.nanoTime();
-                                logger.info(String.format(
-                                            "Remove all from %d took: %d", i, afterRemoveAllOnce - beforeRemove));
-                            }
-                        }).whenCompleteAsync(callback);
-                    }
-                    removeFuture.get(REMOVE_TIMEOUT, TimeUnit.SECONDS);
-                    if (IMapStateHelper.isDebugSnapshot(jetService.getConfig())) {
-                        long afterRemoveAll = System.nanoTime();
-                        logger.info(String.format("Remove all partitions took: %d", afterRemoveAll - beforeRemoveAll));
-                    }
-                } catch (Throwable e) {
-                    logger.severe("Got error during remove", e);
-                    throw rethrow(e);
-                }
+                // Remove old snapshots all at once
+                removeOldSnapshotsAll();
             }
         }
     }
